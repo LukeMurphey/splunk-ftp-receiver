@@ -12,6 +12,69 @@ import time
 import os
 import splunk
 
+class SplunkAuthorizer(DummyAuthorizer): #DummyAuthorizer
+    
+    def __init__(self, path, logger=None):
+        self.user_table = {}
+        self.ftp_path = path
+        self.logger = logger
+    
+    def getCapabilities4User(self, user=None, sessionKey=None):
+        """
+        Obtains a list of capabilities in an list for the given user.
+        
+        Arguments:
+        user -- The user to get capabilities for (as a string)
+        sessionKey -- The session key to be used if it is not none
+        """
+        
+        roles = []
+        capabilities = []
+        
+        # Get user info
+        if user is not None:
+            #self.logger.debug("Retrieving role(s) for current user: %s", user)
+            userEntities = entity.getEntities('authentication/users/%s' % user, count=-1, sessionKey=sessionKey)
+
+            for stanza, settings in userEntities.items():
+                if stanza == user:
+                    for key, val in settings.items():
+                        if key == 'roles':
+                            #self.logger.debug("Successfully retrieved role(s) for user: %s", user)
+                            roles = val
+        
+        # Get capabilities
+        for role in roles:
+            #self.logger.debug("Retrieving capabilities for current user: %s", user)
+            roleEntities = entity.getEntities('authorization/roles/%s' % role, count=-1, sessionKey=sessionKey)
+          
+            for stanza, settings in roleEntities.items():
+                if stanza == role:
+                    for key, val in settings.items():
+                        if key == 'capabilities' or key == "imported_capabilities":
+                            logger.debug('Successfully retrieved %s for user: %s' % (key, user))
+                            capabilities.extend(val)
+
+        return capabilities
+    
+    def validate_authentication(self, username, password, handler):
+        
+        self.logger.info("Asking to authenticate, username=%s", username)
+        
+        # See if the user account is valid
+        try:
+            session_key = splunk.auth.getSessionKey(username=username, password=password)
+        except splunk.AuthenticationFailed:
+            self.logger.info("Failed to authenticate, username=%s", username)
+            raise AuthenticationFailed("User not allowed")
+        
+        # See that capabilities the user has
+        #capabilities = self.getCapabilities4User(username, session_key)
+        
+        # Add the user
+        self.logger.info("User authenticated, username=%s", username)
+        self.add_user(username, '', self.ftp_path, perm='elradfmwM')
+
 class FTPInput(ModularInput):
     """
     The FTP input modular input runs a FTP server so that files can be accepted and indexed.
@@ -42,11 +105,13 @@ class FTPInput(ModularInput):
         
         # Instantiate a dummy authorizer for managing 'virtual' users
         authorizer = DummyAuthorizer()
+        #authorizer = SplunkAuthorizer(path, logger=self.logger)
     
         # Define a new user having full r/w permissions and a read-only
         # anonymous user
         authorizer.add_user('user', '12345', path, perm='elradfmwM')
-        authorizer.add_anonymous(path)
+        authorizer.add_user('admin', 'changeme', path, perm='elradfmwM')
+        #authorizer.add_anonymous(path)
     
         # Instantiate FTP handler class
         handler = FTPHandler
