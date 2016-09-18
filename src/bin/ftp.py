@@ -1,7 +1,9 @@
-
 from splunk.appserver.mrsparkle.lib.util import make_splunkhome_path
 from ftp_receiver_app.modular_input import ModularInput, Field, IntegerField, DurationField
 
+from ftp_receiver_app.pyftpdlib.authorizers import DummyAuthorizer
+from ftp_receiver_app.pyftpdlib.handlers import FTPHandler
+from ftp_receiver_app.pyftpdlib.servers import FTPServer
 
 import logging
 from logging import handlers
@@ -18,7 +20,7 @@ class FTPInput(ModularInput):
     def __init__(self, timeout=30, **kwargs):
 
         scheme_args = {'title': "FTP",
-                       'description': "Retrieve information pver FTP",
+                       'description': "Retrieve information over FTP",
                        'use_single_instance': "false"}
         
         args = [
@@ -36,6 +38,38 @@ class FTPInput(ModularInput):
             
         self.ftp_daemons = []
 
+    def start_server(self, port, path):
+        
+        # Instantiate a dummy authorizer for managing 'virtual' users
+        authorizer = DummyAuthorizer()
+    
+        # Define a new user having full r/w permissions and a read-only
+        # anonymous user
+        authorizer.add_user('user', '12345', path, perm='elradfmwM')
+        authorizer.add_anonymous(path)
+    
+        # Instantiate FTP handler class
+        handler = FTPHandler
+        handler.authorizer = authorizer
+    
+        # Define a customized banner (string returned when client connects)
+        handler.banner = "Splunk FTP server ready."
+    
+        # Instantiate FTP server class
+        address = ('', port)
+        server = FTPServer(address, handler)
+    
+        # Set a limit for connections
+        server.max_cons = 256
+        server.max_cons_per_ip = 5
+    
+        # Start ftp server
+        server.serve_forever()
+
+        # Add the FTP server to the list
+        self.ftpd_daemons.append(server)
+        
+        return server
 
     def do_shutdown(self):
         
@@ -57,10 +91,12 @@ class FTPInput(ModularInput):
         path       = cleaned_params.get("path", None)
         source     = stanza
 
+        # Resolve the path
+        resolved_path = os.path.join(os.environ['SPLUNK_HOME'], path)
+
         # Start the server
-        self.logger.info("Starting server on port=%r, path=%r", port, path)  
-        #ftpd = WebServer(output_results, port, path_re, logger=self.logger)
-        #self.ftpd_daemons.append(ftpd)
+        self.logger.info("Starting server on port=%r, path=%r", port, resolved_path)  
+        self.start_server(port, resolved_path)
             
 if __name__ == '__main__':
     ftp_input = None
