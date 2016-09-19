@@ -11,8 +11,15 @@ import sys
 import time
 import os
 import splunk
+import splunk.entity as entity
 
-class SplunkAuthorizer(DummyAuthorizer): #DummyAuthorizer
+class SplunkAuthorizer(DummyAuthorizer):
+    
+    CAPABILITY_MAP = {
+                      'ftp_read' : 'elr',
+                      'ftp_write' : 'adfmwM',
+                      'ftp_full_control' : 'elradfmwM'
+    }
     
     def __init__(self, path, logger=None):
         self.user_table = {}
@@ -52,10 +59,21 @@ class SplunkAuthorizer(DummyAuthorizer): #DummyAuthorizer
                 if stanza == role:
                     for key, val in settings.items():
                         if key == 'capabilities' or key == "imported_capabilities":
-                            logger.debug('Successfully retrieved %s for user: %s' % (key, user))
+                            #logger.debug('Successfully retrieved %s for user: %s' % (key, user))
                             capabilities.extend(val)
 
         return capabilities
+    
+    def combine_capabilities(self, perm_strings):
+        
+        perms_resolved = []
+        
+        for p in perm_strings:
+            for q in p:
+                if q not in perms_resolved:
+                    perms_resolved.append(q)
+                    
+        return ''.join(perms_resolved)
     
     def validate_authentication(self, username, password, handler):
         
@@ -66,14 +84,51 @@ class SplunkAuthorizer(DummyAuthorizer): #DummyAuthorizer
             session_key = splunk.auth.getSessionKey(username=username, password=password)
         except splunk.AuthenticationFailed:
             self.logger.info("Failed to authenticate, username=%s", username)
-            raise AuthenticationFailed("User not allowed")
+            raise AuthenticationFailed("Authentication failed")
         
         # See that capabilities the user has
-        #capabilities = self.getCapabilities4User(username, session_key)
+        capabilities = self.getCapabilities4User(username, session_key)
+        
+        # Make a list of the perms
+        perms = []
+        
+        for capability in self.CAPABILITY_MAP:
+            if capability in capabilities:
+                perms.append(self.CAPABILITY_MAP[capability])
+        
+        perm_string = self.combine_capabilities(perms)
+        
+        # Stop if the user doesn't have permission
+        if len(perms) == 0:
+            self.logger.info("User lacks capabilities (needs ftp_read, ftp_write or ftp_full_control), username=%s", username)
+            raise AuthenticationFailed("User does not have the proper capabilities (needs ftp_read, ftp_write or ftp_full_control)")
         
         # Add the user
-        self.logger.info("User authenticated, username=%s", username)
-        self.add_user(username, '', self.ftp_path, perm='elradfmwM')
+        self.logger.info("User authenticated, username=%s, perm=%s", username, perm_string)
+        self.add_user(username, '', self.ftp_path, perm=perm_string)
+        
+    def has_user(self, username):
+        return True
+    
+    def add_user(self, username, password, homedir, perm='elr',
+                 msg_login="Login successful.", msg_quit="Goodbye."):
+        
+        #if username in self.user_table
+        
+        if not isinstance(homedir, unicode):
+            homedir = homedir.decode('utf8')
+        if not os.path.isdir(homedir):
+            raise ValueError('no such directory: %r' % homedir)
+        homedir = os.path.realpath(homedir)
+        self._check_permissions(username, perm)
+        dic = {'pwd': str(password),
+               'home': homedir,
+               'perm': perm,
+               'operms': {},
+               'msg_login': str(msg_login),
+               'msg_quit': str(msg_quit)
+               }
+        self.user_table[username] = dic
 
 class FTPInput(ModularInput):
     """
@@ -104,13 +159,13 @@ class FTPInput(ModularInput):
     def start_server(self, port, path):
         
         # Instantiate a dummy authorizer for managing 'virtual' users
-        authorizer = DummyAuthorizer()
-        #authorizer = SplunkAuthorizer(path, logger=self.logger)
+        #authorizer = DummyAuthorizer()
+        authorizer = SplunkAuthorizer(path, logger=self.logger)
     
         # Define a new user having full r/w permissions and a read-only
         # anonymous user
-        authorizer.add_user('user', '12345', path, perm='elradfmwM')
-        authorizer.add_user('admin', 'changeme', path, perm='elradfmwM')
+        #authorizer.add_user('user', '12345', path, perm='elradfmwM')
+        #authorizer.add_user('admin', 'changeme', path, perm='elradfmwM')
         #authorizer.add_anonymous(path)
     
         # Instantiate FTP handler class
@@ -145,7 +200,6 @@ class FTPInput(ModularInput):
         for ftpd in to_delete_list:
             del self.ftp_daemons[ftpd]
             
-
     def run(self, stanza, cleaned_params, input_config):
         
         # Make the parameters
