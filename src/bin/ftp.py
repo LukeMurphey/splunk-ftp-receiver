@@ -1,6 +1,6 @@
 from splunk.appserver.mrsparkle.lib.util import make_splunkhome_path
-from ftp_receiver_app.modular_input import ModularInput, Field, IntegerField, DurationField
 
+from ftp_receiver_app.modular_input import ModularInput, Field, IntegerField, DurationField
 from ftp_receiver_app.pyftpdlib.authorizers import DummyAuthorizer
 from ftp_receiver_app.pyftpdlib.handlers import FTPHandler
 from ftp_receiver_app.pyftpdlib.servers import FTPServer
@@ -10,6 +10,8 @@ from logging import handlers
 import sys
 import time
 import os
+from collections import OrderedDict
+
 import splunk
 import splunk.entity as entity
 
@@ -113,8 +115,6 @@ class SplunkAuthorizer(DummyAuthorizer):
     def add_user(self, username, password, homedir, perm='elr',
                  msg_login="Login successful.", msg_quit="Goodbye."):
         
-        #if username in self.user_table
-        
         if not isinstance(homedir, unicode):
             homedir = homedir.decode('utf8')
         if not os.path.isdir(homedir):
@@ -156,22 +156,47 @@ class FTPInput(ModularInput):
             
         self.ftp_daemons = []
 
-    def start_server(self, port, path):
+    def start_server(self, port, path, callback):
         
-        # Instantiate a dummy authorizer for managing 'virtual' users
-        #authorizer = DummyAuthorizer()
+        # Instantiate an authorizer for authorizing Splunk users
         authorizer = SplunkAuthorizer(path, logger=self.logger)
-    
-        # Define a new user having full r/w permissions and a read-only
-        # anonymous user
-        #authorizer.add_user('user', '12345', path, perm='elradfmwM')
-        #authorizer.add_user('admin', 'changeme', path, perm='elradfmwM')
-        #authorizer.add_anonymous(path)
-    
+            
+        class SplunkFTPHandler(FTPHandler):
+            
+            output_event = callback
+            
+            def on_file_sent(self, file):
+                self.output_event({
+                                   'message': 'File sent',
+                                   'event' : 'file_sent',
+                                   'file' : file
+                                  })
+        
+            def on_file_received(self, file):
+                self.output_event({
+                                    'message': 'File received',
+                                    'event' : 'file_received',
+                                    'file' : file
+                                  })
+        
+            def on_incomplete_file_sent(self, file):
+                self.output_event({
+                                    'message': 'File sent (but was not complete)',
+                                    'event' : 'file_sent_received',
+                                    'file' : file
+                                  })
+        
+            def on_incomplete_file_received(self, file):
+                self.output_event({
+                                    'message': 'File received (but was not complete)',
+                                    'event' : 'file_received_incomplete',
+                                    'file' : file
+                                  })
+            
         # Instantiate FTP handler class
-        handler = FTPHandler
+        handler = SplunkFTPHandler
         handler.authorizer = authorizer
-    
+        
         # Define a customized banner (string returned when client connects)
         handler.banner = "Splunk FTP server ready."
     
@@ -213,9 +238,14 @@ class FTPInput(ModularInput):
         # Resolve the path
         resolved_path = os.path.join(os.environ['SPLUNK_HOME'], path)
 
+        # Make the callback
+        def callback(c, result):
+            self.logger.info("Logging result: %r", result)
+            self.output_event(result, source, index=index, source=source, sourcetype=sourcetype, host=host, unbroken=True, close=True)
+
         # Start the server
         self.logger.info("Starting server on port=%r, path=%r", port, resolved_path)  
-        self.start_server(port, resolved_path)
+        self.start_server(port, resolved_path, callback)
             
 if __name__ == '__main__':
     ftp_input = None
