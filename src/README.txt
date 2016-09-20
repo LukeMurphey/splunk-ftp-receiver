@@ -14,9 +14,9 @@ This app exposes a new input type that can be configured in the Splunk Manager. 
 
 The FTP receiver app supports several capabilities to controls which user accounts can access the FTP server. To do set this up, create a user in Splunk and then assign one or more of the following capabilities:
 
-* ftp_read: can download data from the FTP server
-* ftp_write: can upload files to the FTP server
-* ftp_full_control: ability to do all things on the FTP server (read, write, delete, etc)
+ * ftp_read: can download data from the FTP server
+ * ftp_write: can upload files to the FTP server
+ * ftp_full_control: ability to do all things on the FTP server (read, write, delete, etc)
 
 Only accounts with one of these capabilities will be able to authenticate to the FTP server. Note that the username and password of the Splunk user account will be the username and password used for authenticating with the FTP server. 
 
