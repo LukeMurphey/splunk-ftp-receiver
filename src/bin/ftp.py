@@ -269,14 +269,24 @@ class FTPInput(ModularInput):
             os.mkdir(resolved_path)
         except OSError:
             pass # Directory likely already exists
-
+        
+        # Ensure that the path exists
+        if not os.path.exists(resolved_path):
+            self.logger.critical('FTP root directory does not exist, path="%r"', resolved_path)
+            return
+            
+        # Ensure that the path is a directory
+        if not os.path.isdir(resolved_path):
+            self.logger.critical('Path of FTP root directory is a file, not a directory, path="%r"', resolved_path)
+            return
+            
         # Make the callback
         def callback(c, result):
             self.logger.info("Logging result: %r", result)
             self.output_event(result, source, index=index, source=source, sourcetype=sourcetype, host=host, unbroken=True, close=True)
 
         # Start the server
-        self.logger.info('Starting server on address="%s", port=%r, path=%r', address, port, resolved_path)
+        self.logger.info('Starting server on address="%s", port=%r, path="%r"', address, port, resolved_path)
         
         started = False
         attempts = 0
