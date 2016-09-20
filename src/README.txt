@@ -12,6 +12,8 @@ Configuring Splunk
 
 This app exposes a new input type that can be configured in the Splunk Manager. To configure it, create a new input in the Manager under Data inputs > FTP.
 
+Make sure that the path that you are serving the files from exists.
+
 The FTP receiver app supports several capabilities to controls which user accounts can access the FTP server. To do set this up, create a user in Splunk and then assign one or more of the following capabilities:
 
  * ftp_read: can download data from the FTP server
@@ -19,6 +21,16 @@ The FTP receiver app supports several capabilities to controls which user accoun
  * ftp_full_control: ability to do all things on the FTP server (read, write, delete, etc)
 
 Only accounts with one of these capabilities will be able to authenticate to the FTP server. Note that the username and password of the Splunk user account will be the username and password used for authenticating with the FTP server. 
+
+
+
+================================================
+Known Limitations
+================================================
+
+1) Windows will not run the FTP server properly if the address to listen on is blank or "0.0.0.0". Instead, enter the IP address of the interface to get the input to work. 
+
+2) Uploaded files will not be synchronized between hosts in a Search Head Clustering environment.
 
 
 
