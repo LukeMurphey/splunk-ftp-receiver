@@ -1,16 +1,13 @@
 from splunk.appserver.mrsparkle.lib.util import make_splunkhome_path
 
-from ftp_receiver_app.modular_input import ModularInput, Field, IntegerField, DurationField
-from ftp_receiver_app.pyftpdlib.authorizers import DummyAuthorizer
+from ftp_receiver_app.modular_input import ModularInput, Field, IntegerField
+from ftp_receiver_app.pyftpdlib.authorizers import DummyAuthorizer, AuthenticationFailed
 from ftp_receiver_app.pyftpdlib.handlers import FTPHandler
 from ftp_receiver_app.pyftpdlib.servers import FTPServer
 
-import logging
-from logging import handlers
 import sys
 import time
 import os
-from collections import OrderedDict
 
 import splunk
 import splunk.entity as entity
