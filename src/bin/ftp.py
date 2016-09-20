@@ -143,6 +143,7 @@ class FTPInput(ModularInput):
         args = [
                 IntegerField("port", "Port", 'The port to run the FTP server on', none_allowed=False, empty_allowed=False),
                 Field("path", "Path", 'The path to place the received files; relative paths are based on $SPLUNK_HOME', none_allowed=False, empty_allowed=False),
+                Field("address", "Address to Listen on", 'The address to have the FTP server listen on; leave blank to listen on all interfaces', none_allowed=True, empty_allowed=True),
                 #DurationField("interval", "Interval", "The interval defining how often to make sure the server is running", empty_allowed=True, none_allowed=True)
                 ]
         
@@ -150,7 +151,7 @@ class FTPInput(ModularInput):
             
         self.ftp_daemons = []
 
-    def start_server(self, port, path, callback):
+    def start_server(self, address, port, path, callback):
         
         # Instantiate an authorizer for authorizing Splunk users
         authorizer = SplunkAuthorizer(path, logger=self.logger)
@@ -225,8 +226,8 @@ class FTPInput(ModularInput):
         handler.banner = "Splunk FTP server ready."
     
         # Instantiate FTP server class
-        address = ('', port)
-        server = FTPServer(address, handler)
+        socket_info = (address, port)
+        server = FTPServer(socket_info, handler)
     
         # Set a limit for connections
         server.max_cons = 256
@@ -257,6 +258,7 @@ class FTPInput(ModularInput):
         host       = cleaned_params.get("host", None)
         index      = cleaned_params.get("index", "default")
         path       = cleaned_params.get("path", None)
+        address    = cleaned_params.get("address", "")
         source     = stanza
 
         # Resolve the path
@@ -274,14 +276,14 @@ class FTPInput(ModularInput):
             self.output_event(result, source, index=index, source=source, sourcetype=sourcetype, host=host, unbroken=True, close=True)
 
         # Start the server
-        self.logger.info("Starting server on port=%r, path=%r", port, resolved_path)
+        self.logger.info('Starting server on address="%s", port=%r, path=%r', address, port, resolved_path)
         
         started = False
         attempts = 0
         
         while not started and attempts < FTPInput.MAX_ATTEMPTS_TO_START_SERVER:
             try:
-                self.start_server(port, resolved_path, callback)
+                self.start_server(address, port, resolved_path, callback)
                 started = True
             except IOError as e:
                     
