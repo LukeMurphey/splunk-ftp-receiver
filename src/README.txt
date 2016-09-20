@@ -32,6 +32,8 @@ Known Limitations
 
 2) Uploaded files will not be synchronized between hosts in a Search Head Clustering environment.
 
+3) This app uses Python and thus won't work on a Universal Forwarder. Make sure to use a light or a heavy forwarder.
+
 
 
 ================================================
@@ -71,4 +73,6 @@ Change History
 |         | Added loop that attempts to keep opening the socket if the port is taken already                                 |
 |         | Directory to store files is now created if it does not already exist                                             |
 |         | Input now checks to make sure that the path is a valid directory before attempting to start the FTP server       |
+|---------|------------------------------------------------------------------------------------------------------------------|
+| 1.0     | Updated README                                                                                                   |
 +---------+------------------------------------------------------------------------------------------------------------------+
