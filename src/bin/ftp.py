@@ -135,6 +135,8 @@ class FTPInput(ModularInput):
     The FTP input modular input runs a FTP server so that files can be accepted and indexed.
     """
     
+    MAX_ATTEMPTS_TO_START_SERVER = 60
+    
     def __init__(self, timeout=30, **kwargs):
 
         scheme_args = {'title': "FTP",
@@ -148,11 +150,6 @@ class FTPInput(ModularInput):
                 ]
         
         ModularInput.__init__( self, scheme_args, args, logger_name="ftp_modular_input" )
-        
-        if timeout > 0:
-            self.timeout = timeout
-        else:
-            self.timeout = 30
             
         self.ftp_daemons = []
 
@@ -164,6 +161,36 @@ class FTPInput(ModularInput):
         class SplunkFTPHandler(FTPHandler):
             
             output_event = callback
+            
+            def on_connect(self):
+                self.output_event({
+                                   'message': 'Connection initiated',
+                                   'event' : 'connection_started',
+                                   'remote_ip' : self.remote_ip,
+                                   'remote_port' : self.remote_port
+                                  })
+        
+            def on_disconnect(self):
+                self.output_event({
+                                   'message': 'Connection ended',
+                                   'event' : 'connection_ended',
+                                   'remote_ip' : self.remote_ip,
+                                   'remote_port' : self.remote_port
+                                  })
+            
+            def on_login(self, username):
+                self.output_event({
+                                   'message': 'User logged in',
+                                   'event' : 'login',
+                                   'username' : username
+                                  })
+        
+            def on_logout(self, username):
+                self.output_event({
+                                   'message': 'User logged out',
+                                   'event' : 'logout',
+                                   'username' : username
+                                  })
             
             def on_file_sent(self, file):
                 self.output_event({
@@ -244,8 +271,24 @@ class FTPInput(ModularInput):
             self.output_event(result, source, index=index, source=source, sourcetype=sourcetype, host=host, unbroken=True, close=True)
 
         # Start the server
-        self.logger.info("Starting server on port=%r, path=%r", port, resolved_path)  
-        self.start_server(port, resolved_path, callback)
+        self.logger.info("Starting server on port=%r, path=%r", port, resolved_path)
+        
+        started = False
+        attempts = 0
+        
+        while not started and attempts < FTPInput.MAX_ATTEMPTS_TO_START_SERVER:
+            try:
+                self.start_server(port, resolved_path, callback)
+                started = True
+            except IOError as e:
+                    
+                # Log a message noting that port is taken
+                self.logger.info("The FTP server could not yet be started, attempt %i of %i", attempts, FTPInput.MAX_ATTEMPTS_TO_START_SERVER)
+                    
+                started = False
+                time.sleep(2)
+                attempts = attempts + 1
+            
             
 if __name__ == '__main__':
     ftp_input = None

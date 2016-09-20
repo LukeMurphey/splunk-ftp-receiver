@@ -28,7 +28,7 @@ Getting Support
 
 Go to the following website if you need support:
 
-     http://splunk-base.splunk.com/apps/CHANGEME/answers/
+     http://splunk-base.splunk.com/apps/3318/answers/
 
 You can access the source-code and get technical details about the app at:
 
@@ -54,4 +54,7 @@ Change History
 | Version |  Changes                                                                                                         |
 +---------+------------------------------------------------------------------------------------------------------------------+
 | 0.5     | Initial release                                                                                                  |
+|---------|------------------------------------------------------------------------------------------------------------------|
+| 0.6     | Updated README                                                                                                   |
+|         | Added loop that attempts to keep opening the socket if the port is taken already                                 |
 +---------+------------------------------------------------------------------------------------------------------------------+
