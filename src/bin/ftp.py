@@ -263,7 +263,7 @@ class FTPInput(ModularInput):
         source     = stanza
 
         # Resolve the path
-        resolved_path = os.path.join(os.environ['SPLUNK_HOME'], path)
+        resolved_path = os.path.normpath(os.path.join(os.environ['SPLUNK_HOME'], path))
         
         # Make the path if necessary
         try:
