@@ -57,4 +57,5 @@ Change History
 |---------|------------------------------------------------------------------------------------------------------------------|
 | 0.6     | Updated README                                                                                                   |
 |         | Added loop that attempts to keep opening the socket if the port is taken already                                 |
+|         | Directory to store files is now created if it does not already exist                                             |
 +---------+------------------------------------------------------------------------------------------------------------------+

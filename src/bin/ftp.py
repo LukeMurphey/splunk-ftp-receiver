@@ -264,6 +264,12 @@ class FTPInput(ModularInput):
 
         # Resolve the path
         resolved_path = os.path.join(os.environ['SPLUNK_HOME'], path)
+        
+        # Make the path if necessary
+        try:
+            os.mkdir(resolved_path)
+        except OSError:
+            pass # Directory likely already exists
 
         # Make the callback
         def callback(c, result):
