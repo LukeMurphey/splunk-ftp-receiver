@@ -29,7 +29,7 @@ class TestFTPPathField(unittest.TestCase):
         self.assertRaises(FieldValidationException, lambda: self.path_field.to_python("var/../var/lib/splunk/kvstore") )
 
     def test_non_restricted_paths(self):
-        self.assertTrue(self.path_field.to_python("var/lib/splunk/modinputs").endswith("var/lib/splunk/modinputs"))
+        self.assertTrue(self.path_field.to_python("etc/apps").endswith("etc/apps"))
 
 if __name__ == '__main__':
     unittest.main()
