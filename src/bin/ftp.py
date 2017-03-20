@@ -244,7 +244,7 @@ class FTPInput(ModularInput):
                 #DurationField("interval", "Interval", "The interval defining how often to make sure the server is running", empty_allowed=True, none_allowed=True)
                 ]
 
-        ModularInput.__init__( self, scheme_args, args, logger_name="ftp_modular_input" )
+        ModularInput.__init__(self, scheme_args, args, logger_name="ftp_modular_input")
 
         self.ftp_daemons = []
 
@@ -353,7 +353,7 @@ class FTPInput(ModularInput):
         for ftpd in to_delete_list:
             del self.ftp_daemons[ftpd]
 
-    def run(self, stanza, cleaned_params, input_config):
+    def run(self, stanza, cleaned_params):
 
         # Make the parameters
         port = cleaned_params.get("port", 2121)
@@ -383,7 +383,10 @@ class FTPInput(ModularInput):
 
         # Make the callback
         def callback(c, result):
-            self.logger.info("Logging result: %r", result)
+            """
+            Handles the callbacks indicating that the FTP server has done something.
+            """
+            #self.logger.info("Logging result: %r", result)
             self.output_event(result, source, index=index, source=source, sourcetype=sourcetype,
                               host=host, unbroken=True, close=True)
 
