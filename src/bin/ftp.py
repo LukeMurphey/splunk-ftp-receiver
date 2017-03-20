@@ -389,14 +389,14 @@ class FTPInput(ModularInput):
 
         # Start the server
         self.logger.info('Starting server on address="%s", port=%r, path="%r"', address, port,
-                         resolved_path)
+                         path)
 
         started = False
         attempts = 0
 
         while not started and attempts < FTPInput.MAX_ATTEMPTS_TO_START_SERVER:
             try:
-                self.start_server(address, port, resolved_path, callback)
+                self.start_server(address, port, path, callback)
                 started = True
             except IOError:
 
