@@ -75,4 +75,5 @@ Change History
 |         | Input now checks to make sure that the path is a valid directory before attempting to start the FTP server       |
 |---------|------------------------------------------------------------------------------------------------------------------|
 | 1.0     | Updated README                                                                                                   |
+|         | Added path restrictions so that people cannot use an FTP input to serve sensitive Splunk files                   |
 +---------+------------------------------------------------------------------------------------------------------------------+

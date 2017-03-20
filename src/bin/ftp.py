@@ -8,7 +8,7 @@ import os
 
 from splunk.appserver.mrsparkle.lib.util import make_splunkhome_path
 
-from ftp_receiver_app.modular_input import ModularInput, Field, IntegerField
+from ftp_receiver_app.modular_input import ModularInput, Field, IntegerField, FieldValidationException
 from ftp_receiver_app.pyftpdlib.authorizers import DummyAuthorizer, AuthenticationFailed
 from ftp_receiver_app.pyftpdlib.handlers import FTPHandler
 from ftp_receiver_app.pyftpdlib.servers import FTPServer
@@ -158,6 +158,72 @@ class SplunkAuthorizer(DummyAuthorizer):
         }
         self.user_table[username] = dic
 
+class FTPPathField(Field):
+    """
+    Represents the path from where the files will be served by the FTP server.
+    """
+
+    def resolve_intermediate_paths(self, path):
+        """
+        Create a list of paths that includes all of the parents of the given path.
+
+        For example, the path "/opt/splunk" would return resolved paths for "opt" and "opt/splunk".
+        """
+
+        # Split the path into its parts
+        path_split = path.split("/") # TODO: support Windows
+
+        # Create each part
+        paths = []
+        path_so_far = ''
+
+        for path_part in path_split:
+
+            path_so_far = os.path.join(path_so_far, path_part)
+
+            paths.append(os.path.normpath(os.path.join(os.environ['SPLUNK_HOME'],path_so_far)))
+
+        return paths
+
+    def to_python(self, value):
+        Field.to_python(self, value)
+
+        # Resolve the path
+        resolved_path = os.path.normpath(os.path.join(os.environ['SPLUNK_HOME'], value))
+
+        # This is a list of the paths that we will not allow serving.
+        restricted_paths = []
+
+        # The mongo key lives here
+        restricted_paths.extend(self.resolve_intermediate_paths('var/lib/splunk/kvstore/mongo'))
+
+        # The Splunk secret and certificates live here and the passwd file lives in etc
+        restricted_paths.extend(self.resolve_intermediate_paths('etc/auth'))
+
+        # Make sure that user isn't serving one of the paths that is restricted
+        if resolved_path in restricted_paths:
+            raise FieldValidationException('The path to serve is not allowed for security' +
+                                           'reasons; Splunk paths containing password files, ' +
+                                           'certificates, etc. are not allowed to be served')
+
+        # Make the path if necessary
+        try:
+            os.mkdir(resolved_path)
+        except OSError:
+            pass # Directory likely already exists
+
+        # Ensure that the path exists
+        if not os.path.exists(resolved_path):
+            raise FieldValidationException('The path to serve does not exist and could not be' +
+                                           'created')
+
+        # Ensure that the path is a directory
+        if not os.path.isdir(resolved_path):
+            raise FieldValidationException('The path to serve is a file, not a directory')
+
+        # Return the path that is normalized and resolved
+        return resolved_path
+
 class FTPInput(ModularInput):
     """
     The FTP input modular input runs a FTP server so that files can be accepted and indexed.
@@ -173,7 +239,7 @@ class FTPInput(ModularInput):
 
         args = [
                 IntegerField("port", "Port", 'The port to run the FTP server on', none_allowed=False, empty_allowed=False),
-                Field("path", "Path", 'The path to place the received files; relative paths are based on $SPLUNK_HOME', none_allowed=False, empty_allowed=False),
+                FTPPathField("path", "Path", 'The path to place the received files; relative paths are based on $SPLUNK_HOME', none_allowed=False, empty_allowed=False),
                 Field("address", "Address to Listen on", 'The address to have the FTP server listen on; leave blank to listen on all interfaces', none_allowed=True, empty_allowed=True),
                 #DurationField("interval", "Interval", "The interval defining how often to make sure the server is running", empty_allowed=True, none_allowed=True)
                 ]
@@ -298,24 +364,21 @@ class FTPInput(ModularInput):
         address = cleaned_params.get("address", "")
         source = stanza
 
-        # Resolve the path
-        resolved_path = os.path.normpath(os.path.join(os.environ['SPLUNK_HOME'], path))
-
         # Make the path if necessary
         try:
-            os.mkdir(resolved_path)
+            os.mkdir(path)
         except OSError:
             pass # Directory likely already exists
 
         # Ensure that the path exists
-        if not os.path.exists(resolved_path):
-            self.logger.critical('FTP root directory does not exist, path="%r"', resolved_path)
+        if not os.path.exists(path):
+            self.logger.critical('FTP root directory does not exist, path="%r"', path)
             return
 
         # Ensure that the path is a directory
-        if not os.path.isdir(resolved_path):
+        if not os.path.isdir(path):
             self.logger.critical('Path of FTP root directory is a file, not a directory,' +
-                                 ' path="%r"', resolved_path)
+                                 ' path="%r"', path)
             return
 
         # Make the callback
