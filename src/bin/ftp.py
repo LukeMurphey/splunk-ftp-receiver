@@ -353,7 +353,7 @@ class FTPInput(ModularInput):
         for ftpd in to_delete_list:
             del self.ftp_daemons[ftpd]
 
-    def run(self, stanza, cleaned_params):
+    def run(self, stanza, cleaned_params, input_config):
 
         # Make the parameters
         port = cleaned_params.get("port", 2121)
