@@ -22,3 +22,5 @@ Thumbs.db
 .pydevproject
 .settings/
 /tmp/
+
+.vscode/*
