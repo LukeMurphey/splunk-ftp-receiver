@@ -1,3 +1,7 @@
+"""
+This tests the FTP server related functionality necessary for the modular input to run.
+"""
+
 import unittest
 import sys
 import os
