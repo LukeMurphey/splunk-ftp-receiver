@@ -7,8 +7,6 @@ import sys
 import os
 import errno
 
-import HTMLTestRunner
-
 sys.path.append(os.path.join("..", "src", "bin") )
 
 from ftp import *
@@ -17,7 +15,7 @@ class TestSplunkAuthorizer(unittest.TestCase):
 
     def test_combine_capabilities(self):
         authorizer = SplunkAuthorizer('etc/splunk/data')
-        self.assertEquals(authorizer.combine_capabilities(['abc', 'abcdef', 'ghia']), 'abcdefghi')
+        self.assertEqual(authorizer.combine_capabilities(['abc', 'abcdef', 'ghia']), 'abcdefghi')
 
 class TestFTPPathField(unittest.TestCase):
 
@@ -37,17 +35,4 @@ class TestFTPPathField(unittest.TestCase):
         self.assertTrue(self.path_field.to_python("etc/apps").endswith("etc/apps"))
 
 if __name__ == '__main__':
-    report_path = os.path.join('..', os.environ.get('TEST_OUTPUT', 'tmp/test_report.html'))
-
-    # Make the test directory
-    try:
-        os.makedirs(os.path.dirname(report_path))
-    except OSError as exception:
-        if exception.errno != errno.EEXIST:
-            raise
-
-    with open(report_path, 'w') as report_file:
-        test_runner = HTMLTestRunner.HTMLTestRunner(
-            stream=report_file
-        )
-        unittest.main(testRunner=test_runner)
+    unittest.main()

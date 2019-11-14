@@ -5,10 +5,14 @@ This module defines a modular input that wires up Splunk to an FTP server (provi
 import sys
 import time
 import os
+import sys
 
-from splunk.appserver.mrsparkle.lib.util import make_splunkhome_path
+path_to_mod_input_lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'modular_input.zip')
+sys.path.insert(0, path_to_mod_input_lib)
 
-from ftp_receiver_app.modular_input import ModularInput, Field, IntegerField, FieldValidationException
+from splunk.clilib.bundle_paths import make_splunkhome_path
+
+from modular_input import ModularInput, Field, IntegerField, FieldValidationException
 from ftp_receiver_app.pyftpdlib.authorizers import DummyAuthorizer, AuthenticationFailed
 from ftp_receiver_app.pyftpdlib.handlers import FTPHandler
 from ftp_receiver_app.pyftpdlib.servers import FTPServer
