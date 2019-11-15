@@ -21,6 +21,9 @@ from splunk.auth import getSessionKey
 from splunk import AuthenticationFailed as SplunkAuthenticationFailed
 import splunk.entity as entity
 
+if sys.version_info.major >= 3:
+    unicode = str
+
 class SplunkAuthorizer(DummyAuthorizer):
     """
     This authorizer allows the FTP server to use Splunk's capabilities and users.
