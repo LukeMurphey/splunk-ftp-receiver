@@ -1,4 +1,4 @@
-# Copyright (C) 2007-2016 Giampaolo Rodola' <g.rodola@gmail.com>.
+# Copyright (C) 2007 Giampaolo Rodola' <g.rodola@gmail.com>.
 # Use of this source code is governed by MIT license that can be
 # found in the LICENSE file.
 
@@ -47,7 +47,7 @@ Usage example:
 >>> from pyftpdlib.servers import FTPServer
 >>>
 >>> authorizer = DummyAuthorizer()
->>> authorizer.add_user("user", "12345", "/home/giampaolo", perm="elradfmw")
+>>> authorizer.add_user("user", "12345", "/home/giampaolo", perm="elradfmwMT")
 >>> authorizer.add_anonymous("/home/nobody")
 >>>
 >>> handler = FTPHandler
@@ -68,6 +68,6 @@ Usage example:
 """
 
 
-__ver__ = '1.5.1'
+__ver__ = '1.5.5'
 __author__ = "Giampaolo Rodola' <g.rodola@gmail.com>"
 __web__ = 'https://github.com/giampaolo/pyftpdlib/'

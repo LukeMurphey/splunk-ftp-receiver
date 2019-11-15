@@ -1,4 +1,4 @@
-# Copyright (C) 2007-2016 Giampaolo Rodola' <g.rodola@gmail.com>.
+# Copyright (C) 2007 Giampaolo Rodola' <g.rodola@gmail.com>.
 # Use of this source code is governed by MIT license that can be
 # found in the LICENSE file.
 
@@ -38,6 +38,7 @@ import os
 import select
 import signal
 import sys
+import threading
 import time
 import traceback
 
@@ -48,8 +49,7 @@ from .log import debug
 from .log import is_logging_configured
 from .log import logger
 
-
-__all__ = ['FTPServer']
+__all__ = ['FTPServer', 'ThreadedFTPServer']
 _BSD = 'bsd' in sys.platform
 
 
@@ -114,8 +114,15 @@ class FTPServer(Acceptor):
             self.bind_af_unspecified(address_or_socket)
         self.listen(backlog)
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close_all()
+
     @property
     def address(self):
+        """The address this server is listening on as a (ip, port) tuple."""
         return self.socket.getsockname()[:2]
 
     def _map_len(self):
@@ -188,7 +195,7 @@ class FTPServer(Acceptor):
         """Start serving.
 
          - (float) timeout: the timeout passed to the underlying IO
-           loop expressed in seconds (default 1.0).
+           loop expressed in seconds.
 
          - (bool) blocking: if False loop once and then return the
            timeout of the next scheduled call next to expire soonest
@@ -290,9 +297,11 @@ class _SpawnerBase(FTPServer):
     Not supposed to be used.
     """
 
-    # how many seconds to wait when join()ing parent's threads
-    # or processes
+    # How many seconds to wait when join()ing parent's threads
+    # or processes.
     join_timeout = 5
+    # How often thread/process finished tasks should be cleaned up.
+    refresh_interval = 5
     _lock = None
     _exit = None
 
@@ -300,15 +309,39 @@ class _SpawnerBase(FTPServer):
         FTPServer.__init__(self, address_or_socket, handler,
                            ioloop=ioloop, backlog=backlog)
         self._active_tasks = []
+        self._active_tasks_idler = self.ioloop.call_every(
+            self.refresh_interval,
+            self._refresh_tasks,
+            _errback=self.handle_error)
 
     def _start_task(self, *args, **kwargs):
         raise NotImplementedError('must be implemented in subclass')
 
-    def _current_task(self):
-        raise NotImplementedError('must be implemented in subclass')
-
     def _map_len(self):
-        raise NotImplementedError('must be implemented in subclass')
+        if len(self._active_tasks) >= self.max_cons:
+            # Since refresh()ing is a potentially expensive operation
+            # (O(N)) do it only if we're exceeding max connections
+            # limit. Other than in here, tasks are refreshed every 10
+            # seconds anyway.
+            self._refresh_tasks()
+        return len(self._active_tasks)
+
+    def _refresh_tasks(self):
+        """join() terminated tasks and update internal _tasks list.
+        This gets called every X secs.
+        """
+        if self._active_tasks:
+            logger.debug("refreshing tasks (%s join() potentials)" %
+                         len(self._active_tasks))
+            with self._lock:
+                new = []
+                for t in self._active_tasks:
+                    if not t.is_alive():
+                        self._join_task(t)
+                    else:
+                        new.append(t)
+
+                self._active_tasks = new
 
     def _loop(self, handler):
         """Serve handler's IO loop in a separate thread or process."""
@@ -362,7 +395,7 @@ class _SpawnerBase(FTPServer):
                 except select.error as err:
                     # on Windows we can get WSAENOTSOCK if the client
                     # rapidly connect and disconnects
-                    if os.name == 'nt' and err.errno == 10038:
+                    if os.name == 'nt' and err[0] == 10038:
                         for fd in list(ioloop.socket_map.keys()):
                             try:
                                 select.select([fd], [], [], 0)
@@ -389,7 +422,8 @@ class _SpawnerBase(FTPServer):
             # main thread to accept connections
             self.ioloop.unregister(handler._fileno)
 
-            t = self._start_task(target=self._loop, args=(handler,))
+            t = self._start_task(target=self._loop, args=(handler, ),
+                                 name='ftpd')
             t.name = repr(addr)
             t.start()
 
@@ -398,17 +432,13 @@ class _SpawnerBase(FTPServer):
                 handler.close()
 
             with self._lock:
-                # clean finished tasks
-                for task in self._active_tasks[:]:
-                    if not task.is_alive():
-                        self._active_tasks.remove(task)
                 # add the new task
                 self._active_tasks.append(t)
 
     def _log_start(self):
         FTPServer._log_start(self)
 
-    def serve_forever(self, timeout=None, blocking=True, handle_exit=True):
+    def serve_forever(self, timeout=1.0, blocking=True, handle_exit=True):
         self._exit.clear()
         if handle_exit:
             log = handle_exit and blocking
@@ -427,95 +457,68 @@ class _SpawnerBase(FTPServer):
         else:
             self.ioloop.loop(timeout, blocking)
 
+    def _terminate_task(self, t):
+        if hasattr(t, 'terminate'):
+            logger.debug("terminate()ing task %r" % t)
+            try:
+                if not _BSD:
+                    t.terminate()
+                else:
+                    # XXX - On FreeBSD using SIGTERM doesn't work
+                    # as the process hangs on kqueue.control() or
+                    # select.select(). Use SIGKILL instead.
+                    os.kill(t.pid, signal.SIGKILL)
+            except OSError as err:
+                if err.errno != errno.ESRCH:
+                    raise
+
+    def _join_task(self, t):
+        logger.debug("join()ing task %r" % t)
+        t.join(self.join_timeout)
+        if t.is_alive():
+            logger.warning("task %r remained alive after %r secs", t,
+                           self.join_timeout)
+
     def close_all(self):
-        tasks = self._active_tasks[:]
+        self._active_tasks_idler.cancel()
         # this must be set after getting active tasks as it causes
         # thread objects to get out of the list too soon
         self._exit.set()
-        if tasks and hasattr(tasks[0], 'terminate'):
-            # we're dealing with subprocesses
-            for t in tasks:
-                try:
-                    if not _BSD:
-                        t.terminate()
-                    else:
-                        # XXX - On FreeBSD using SIGTERM doesn't work
-                        # as the process hangs on kqueue.control() or
-                        # select.select(). Use SIGKILL instead.
-                        os.kill(t.pid, signal.SIGKILL)
-                except OSError as err:
-                    if err.errno != errno.ESRCH:
-                        raise
 
-        self._wait_for_tasks(tasks)
-        del self._active_tasks[:]
+        with self._lock:
+            for t in self._active_tasks:
+                self._terminate_task(t)
+            for t in self._active_tasks:
+                self._join_task(t)
+            del self._active_tasks[:]
+
         FTPServer.close_all(self)
 
-    def _wait_for_tasks(self, tasks):
-        """Wait for threads or subprocesses to terminate."""
-        warn = logger.warning
-        for t in tasks:
-            t.join(self.join_timeout)
-            if t.is_alive():
-                # Thread or process is still alive. If it's a process
-                # attempt to send SIGKILL as last resort.
-                # Set timeout to None so that we will exit immediately
-                # in case also other threads/processes are hanging.
-                self.join_timeout = None
-                if hasattr(t, 'terminate'):
-                    msg = "could not terminate process %r" % t
-                    if not _BSD:
-                        warn(msg + "; sending SIGKILL as last resort")
-                        try:
-                            os.kill(t.pid, signal.SIGKILL)
-                        except OSError as err:
-                            if err.errno != errno.ESRCH:
-                                raise
-                    else:
-                        warn(msg)
-                else:
-                    warn("thread %r didn't terminate; ignoring it", t)
 
-
-try:
-    import threading
-except ImportError:
-    pass
-else:
-    __all__ += ['ThreadedFTPServer']
+class ThreadedFTPServer(_SpawnerBase):
+    """A modified version of base FTPServer class which spawns a
+    thread every time a new connection is established.
+    """
+    # The timeout passed to thread's IOLoop.poll() call on every
+    # loop. Necessary since threads ignore KeyboardInterrupt.
+    poll_timeout = 1.0
+    _lock = threading.Lock()
+    _exit = threading.Event()
 
     # compatibility with python <= 2.6
-    if not hasattr(threading.Thread, 'is_alive'):
-        threading.Thread.is_alive = threading.Thread.isAlive
+    if not hasattr(_exit, 'is_set'):
+        _exit.is_set = _exit.isSet
 
-    class ThreadedFTPServer(_SpawnerBase):
-        """A modified version of base FTPServer class which spawns a
-        thread every time a new connection is established.
-        """
-        # The timeout passed to thread's IOLoop.poll() call on every
-        # loop. Necessary since threads ignore KeyboardInterrupt.
-        poll_timeout = 1.0
-        _lock = threading.Lock()
-        _exit = threading.Event()
-
-        # compatibility with python <= 2.6
-        if not hasattr(_exit, 'is_set'):
-            _exit.is_set = _exit.isSet
-
-        def _start_task(self, *args, **kwargs):
-            return threading.Thread(*args, **kwargs)
-
-        def _current_task(self):
-            return threading.currentThread()
-
-        def _map_len(self):
-            return threading.activeCount()
+    def _start_task(self, *args, **kwargs):
+        return threading.Thread(*args, **kwargs)
 
 
 if os.name == 'posix':
     try:
         import multiprocessing
-    except ImportError:
+        multiprocessing.Lock()
+    except Exception:
+        # see https://github.com/giampaolo/pyftpdlib/issues/496
         pass
     else:
         __all__ += ['MultiprocessFTPServer']
@@ -529,9 +532,3 @@ if os.name == 'posix':
 
             def _start_task(self, *args, **kwargs):
                 return multiprocessing.Process(*args, **kwargs)
-
-            def _current_task(self):
-                return multiprocessing.current_process()
-
-            def _map_len(self):
-                return len(multiprocessing.active_children())

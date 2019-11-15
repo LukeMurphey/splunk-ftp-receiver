@@ -1,4 +1,4 @@
-# Copyright (C) 2007-2016 Giampaolo Rodola' <g.rodola@gmail.com>.
+# Copyright (C) 2007 Giampaolo Rodola' <g.rodola@gmail.com>.
 # Use of this source code is governed by MIT license that can be
 # found in the LICENSE file.
 
@@ -15,6 +15,13 @@ try:
     import grp
 except ImportError:
     pwd = grp = None
+try:
+    from os import scandir  # py 3.5
+except ImportError:
+    try:
+        from scandir import scandir  # requires "pip install scandir"
+    except ImportError:
+        scandir = None
 
 from ._compat import PY3
 from ._compat import u
@@ -212,6 +219,7 @@ class AbstractedFS(object):
         interface.
         """
         class FileWrapper:
+
             def __init__(self, fd, name):
                 self.file = fd
                 self.name = name
@@ -229,11 +237,13 @@ class AbstractedFS(object):
     # --- Wrapper methods around os.* calls
 
     def chdir(self, path):
-        """Change the current directory."""
+        """Change the current directory. If this method is overridden
+        it is vital that `cwd` attribute gets set.
+        """
         # note: process cwd will be reset by the caller
         assert isinstance(path, unicode), path
         os.chdir(path)
-        self._cwd = self.fs2ftp(path)
+        self.cwd = self.fs2ftp(path)
 
     def mkdir(self, path):
         """Create the specified directory."""
@@ -241,6 +251,11 @@ class AbstractedFS(object):
         os.mkdir(path)
 
     def listdir(self, path):
+        """List the content of a directory."""
+        assert isinstance(path, unicode), path
+        return os.listdir(path)
+
+    def listdirinfo(self, path):
         """List the content of a directory."""
         assert isinstance(path, unicode), path
         return os.listdir(path)
@@ -273,6 +288,12 @@ class AbstractedFS(object):
         # on python 2 we might also get bytes from os.lisdir()
         # assert isinstance(path, unicode), path
         return os.stat(path)
+
+    def utime(self, path, timeval):
+        """Perform a utime() call on the given path"""
+        # utime expects a int/float (atime, mtime) in seconds
+        # thus, setting both access and modify time to timeval
+        return os.utime(path, (timeval, timeval))
 
     if hasattr(os, 'lstat'):
         def lstat(self, path):
@@ -364,29 +385,6 @@ class AbstractedFS(object):
 
     # --- Listing utilities
 
-    def get_list_dir(self, path):
-        """"Return an iterator object that yields a directory listing
-        in a form suitable for LIST command.
-        """
-        assert isinstance(path, unicode), path
-        if self.isdir(path):
-            listing = self.listdir(path)
-            try:
-                listing.sort()
-            except UnicodeDecodeError:
-                # (Python 2 only) might happen on filesystem not
-                # supporting UTF8 meaning os.listdir() returned a list
-                # of mixed bytes and unicode strings:
-                # http://goo.gl/6DLHD
-                # http://bugs.python.org/issue683592
-                pass
-            return self.format_list(path, listing)
-        # if path is a file or a symlink we return information about it
-        else:
-            basedir, filename = os.path.split(path)
-            self.lstat(path)  # raise exc in case of problems
-            return self.format_list(basedir, [filename])
-
     def format_list(self, basedir, listing, ignore_err=True):
         """Return an iterator object that yields the entries of given
         directory emulating the "/bin/ls -lA" UNIX command output.
@@ -409,8 +407,6 @@ class AbstractedFS(object):
         -rw-rw-rw-   1 owner   group        380 Sep 02  3:40 module.py
         """
         assert isinstance(basedir, unicode), basedir
-        if listing:
-            assert isinstance(listing[0], unicode)
         if self.cmd_channel.use_gmt_times:
             timefunc = time.gmtime
         else:
@@ -509,8 +505,6 @@ class AbstractedFS(object):
         type=file;size=211;perm=r;modify=20071103093626;unique=192; module.py
         """
         assert isinstance(basedir, unicode), basedir
-        if listing:
-            assert isinstance(listing[0], unicode)
         if self.cmd_channel.use_gmt_times:
             timefunc = time.gmtime
         else:

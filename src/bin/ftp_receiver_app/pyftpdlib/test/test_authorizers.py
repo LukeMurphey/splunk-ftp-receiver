@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# Copyright (C) 2007-2016 Giampaolo Rodola' <g.rodola@gmail.com>.
+# Copyright (C) 2007 Giampaolo Rodola' <g.rodola@gmail.com>.
 # Use of this source code is governed by MIT license that can be
 # found in the LICENSE file.
 
@@ -165,8 +165,7 @@ class TestDummyAuthorizer(unittest.TestCase):
         self.assertEqual(auth.has_perm(USER, 'w', path), False)
         # test case-sensitiveness
         if (os.name in ('nt', 'ce')) or (sys.platform == 'cygwin'):
-            self.assertEqual(auth.has_perm(USER, 'w',
-                             self.tempdir.upper()), True)
+            self.assertTrue(auth.has_perm(USER, 'w', self.tempdir.upper()))
 
     def test_override_perm_not_recursive_paths(self):
         auth = DummyAuthorizer()
@@ -216,7 +215,7 @@ class _SharedAuthorizerTests(object):
         # return a user which does not exist on the system
         users = self.get_users()
         letters = string.ascii_lowercase
-        while 1:
+        while True:
             user = ''.join([random.choice(letters) for i in range(10)])
             if user not in users:
                 return user
@@ -345,7 +344,7 @@ class _SharedAuthorizerTests(object):
         # make sure other settings keep using default values
         self.assertEqual(auth.get_home_dir(user),
                          self.get_current_user_homedir())
-        self.assertEqual(auth.get_perms(user), "elradfmw")
+        self.assertEqual(auth.get_perms(user), "elradfmwMT")
         self.assertEqual(auth.get_msg_login(user), "Login successful.")
         self.assertEqual(auth.get_msg_quit(user), "Goodbye.")
 
@@ -358,7 +357,7 @@ class _SharedAuthorizerTests(object):
         # make sure other settings keep using default values
         # self.assertEqual(auth.get_home_dir(user),
         #                  self.get_current_user_homedir())
-        self.assertEqual(auth.get_perms(user), "elradfmw")
+        self.assertEqual(auth.get_perms(user), "elradfmwMT")
         self.assertEqual(auth.get_msg_login(user), "Login successful.")
         self.assertEqual(auth.get_msg_quit(user), "Goodbye.")
 
@@ -370,7 +369,7 @@ class _SharedAuthorizerTests(object):
         # make sure other settings keep using default values
         self.assertEqual(auth.get_home_dir(user),
                          self.get_current_user_homedir())
-        # self.assertEqual(auth.get_perms(user), "elradfmw")
+        # self.assertEqual(auth.get_perms(user), "elradfmwMT")
         self.assertEqual(auth.get_msg_login(user), "Login successful.")
         self.assertEqual(auth.get_msg_quit(user), "Goodbye.")
 
@@ -383,7 +382,7 @@ class _SharedAuthorizerTests(object):
         # make sure other settings keep using default values
         self.assertEqual(auth.get_home_dir(user),
                          self.get_current_user_homedir())
-        self.assertEqual(auth.get_perms(user), "elradfmw")
+        self.assertEqual(auth.get_perms(user), "elradfmwMT")
         # self.assertEqual(auth.get_msg_login(user), "Login successful.")
         # self.assertEqual(auth.get_msg_quit(user), "Goodbye.")
 

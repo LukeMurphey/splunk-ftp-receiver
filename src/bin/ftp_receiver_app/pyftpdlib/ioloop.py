@@ -1,4 +1,4 @@
-# Copyright (C) 2007-2016 Giampaolo Rodola' <g.rodola@gmail.com>.
+# Copyright (C) 2007 Giampaolo Rodola' <g.rodola@gmail.com>.
 # Use of this source code is governed by MIT license that can be
 # found in the LICENSE file.
 
@@ -85,7 +85,7 @@ _write = asyncore.write
 # These errnos indicate that a connection has been abruptly terminated.
 _ERRNOS_DISCONNECTED = set((
     errno.ECONNRESET, errno.ENOTCONN, errno.ESHUTDOWN, errno.ECONNABORTED,
-    errno.EPIPE, errno.EBADF))
+    errno.EPIPE, errno.EBADF, errno.ETIMEDOUT))
 if hasattr(errno, "WSAECONNRESET"):
     _ERRNOS_DISCONNECTED.add(errno.WSAECONNRESET)
 if hasattr(errno, "WSAECONNABORTED"):
@@ -445,7 +445,7 @@ class Select(_IOLoop):
         try:
             r, w, e = select.select(self._r, self._w, [], timeout)
         except select.error as err:
-            if err.errno == errno.EINTR:
+            if getattr(err, "errno", None) == errno.EINTR:
                 return
             raise
 
@@ -569,7 +569,7 @@ if hasattr(select, 'poll'):
 # --- /dev/poll - Solaris (introduced in python 3.3)
 # ===================================================================
 
-if hasattr(select, 'devpoll'):
+if hasattr(select, 'devpoll'):  # pragma: no cover
 
     class DevPoll(_BasePollEpoll):
         """/dev/poll based poller (introduced in python 3.3)."""
@@ -630,7 +630,7 @@ if hasattr(select, 'epoll'):
 # --- kqueue() - BSD / OSX
 # ===================================================================
 
-if hasattr(select, 'kqueue'):
+if hasattr(select, 'kqueue'):  # pragma: no cover
 
     class Kqueue(_IOLoop):
         """kqueue() based poller."""
@@ -863,7 +863,8 @@ class AsyncChat(asynchat.async_chat):
                                           source_address[1])
                     self.bind(source_address)
                 self.connect((host, port))
-            except socket.error as err:
+            except socket.error as _:
+                err = _
                 if self.socket is not None:
                     self.socket.close()
                     self.del_channel()
@@ -1031,11 +1032,13 @@ class Acceptor(AsyncChat):
         try:
             sock, addr = self.accept()
         except TypeError:
-            # sometimes accept() might return None (see issue 91)
+            # sometimes accept() might return None, see:
+            # https://github.com/giampaolo/pyftpdlib/issues/91
             debug("call: handle_accept(); accept() returned None", self)
             return
         except socket.error as err:
-            # ECONNABORTED might be thrown on *BSD (see issue 105)
+            # ECONNABORTED might be thrown on *BSD, see:
+            # https://github.com/giampaolo/pyftpdlib/issues/105
             if err.errno != errno.ECONNABORTED:
                 raise
             else:

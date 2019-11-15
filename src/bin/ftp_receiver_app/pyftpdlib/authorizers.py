@@ -1,4 +1,4 @@
-# Copyright (C) 2007-2016 Giampaolo Rodola' <g.rodola@gmail.com>.
+# Copyright (C) 2007 Giampaolo Rodola' <g.rodola@gmail.com>.
 # Use of this source code is governed by MIT license that can be
 # found in the LICENSE file.
 
@@ -67,7 +67,7 @@ class DummyAuthorizer(object):
     """
 
     read_perms = "elr"
-    write_perms = "adfmwM"
+    write_perms = "adfmwMT"
 
     def __init__(self):
         self.user_table = {}
@@ -94,6 +94,7 @@ class DummyAuthorizer(object):
          - "m" = create directory (MKD command)
          - "w" = store a file to the server (STOR, STOU commands)
          - "M" = change file mode (SITE CHMOD command)
+         - "T" = update file last modified time (MFMT command)
 
         Optional msg_login and msg_quit arguments can be specified to
         provide customized response strings when user log-in and quit.
@@ -199,7 +200,7 @@ class DummyAuthorizer(object):
         pathname of a file or a directory).
 
         Expected perm argument is one of the following letters:
-        "elradfmwM".
+        "elradfmwMT".
         """
         if path is None:
             return perm in self.user_table[username]['perm']
@@ -226,7 +227,10 @@ class DummyAuthorizer(object):
 
     def get_msg_quit(self, username):
         """Return the user's quitting message."""
-        return self.user_table[username]['msg_quit']
+        try:
+            return self.user_table[username]['msg_quit']
+        except KeyError:
+            return "Goodbye."
 
     def _check_permissions(self, username, perm):
         warned = 0
@@ -466,7 +470,7 @@ else:
             return "Goodbye."
 
         def get_perms(self, username):
-            return "elradfmw"
+            return "elradfmwMT"
 
         def has_perm(self, username, perm, path=None):
             return perm in self.get_perms(username)
@@ -478,7 +482,7 @@ else:
 
         Example usages:
 
-         >>> from pyftpdlib.contrib.authorizers import UnixAuthorizer
+         >>> from pyftpdlib.authorizers import UnixAuthorizer
          >>> # accept all except root
          >>> auth = UnixAuthorizer(rejected_users=["root"])
          >>>
@@ -494,7 +498,7 @@ else:
 
         # --- public API
 
-        def __init__(self, global_perm="elradfmw",
+        def __init__(self, global_perm="elradfmwMT",
                      allowed_users=None,
                      rejected_users=None,
                      require_valid_shell=True,
@@ -505,7 +509,7 @@ else:
 
              - (string) global_perm:
                 a series of letters referencing the users permissions;
-                defaults to "elradfmw" which means full read and write
+                defaults to "elradfmwMT" which means full read and write
                 access for everybody (except anonymous).
 
              - (list) allowed_users:
@@ -734,7 +738,7 @@ else:
             return "Goodbye."
 
         def get_perms(self, username):
-            return "elradfmw"
+            return "elradfmwMT"
 
         def has_perm(self, username, perm, path=None):
             return perm in self.get_perms(username)
@@ -746,7 +750,7 @@ else:
 
         Example usages:
 
-         >>> from pyftpdlib.contrib.authorizers import WindowsAuthorizer
+         >>> from pyftpdlib.authorizers import WindowsAuthorizer
          >>> # accept all except Administrator
          >>> auth = WindowsAuthorizer(rejected_users=["Administrator"])
          >>>
@@ -760,7 +764,7 @@ else:
         # --- public API
 
         def __init__(self,
-                     global_perm="elradfmw",
+                     global_perm="elradfmwMT",
                      allowed_users=None,
                      rejected_users=None,
                      anonymous_user=None,
@@ -771,7 +775,7 @@ else:
 
              - (string) global_perm:
                 a series of letters referencing the users permissions;
-                defaults to "elradfmw" which means full read and write
+                defaults to "elradfmwMT" which means full read and write
                 access for everybody (except anonymous).
 
              - (list) allowed_users:

@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# Copyright (C) 2007-2016 Giampaolo Rodola' <g.rodola@gmail.com>.
+# Copyright (C) 2007 Giampaolo Rodola' <g.rodola@gmail.com>.
 # Use of this source code is governed by MIT license that can be
 # found in the LICENSE file.
 
@@ -18,14 +18,10 @@ import stat
 import sys
 import tempfile
 import time
-import warnings
-
-import mock
 
 from pyftpdlib._compat import b
 from pyftpdlib._compat import PY3
 from pyftpdlib._compat import u
-from pyftpdlib._compat import unicode
 from pyftpdlib.filesystems import AbstractedFS
 from pyftpdlib.handlers import DTPHandler
 from pyftpdlib.handlers import FTPHandler
@@ -34,67 +30,56 @@ from pyftpdlib.handlers import ThrottledDTPHandler
 from pyftpdlib.ioloop import IOLoop
 from pyftpdlib.servers import FTPServer
 from pyftpdlib.test import BUFSIZE
+from pyftpdlib.test import close_client
 from pyftpdlib.test import configure_logging
 from pyftpdlib.test import disable_log_warning
-from pyftpdlib.test import FTPd
+from pyftpdlib.test import get_server_handler
 from pyftpdlib.test import HOME
 from pyftpdlib.test import HOST
 from pyftpdlib.test import INTERRUPTED_TRANSF_SIZE
+from pyftpdlib.test import mock
+from pyftpdlib.test import MProcessTestFTPd
 from pyftpdlib.test import OSX
 from pyftpdlib.test import PASSWD
 from pyftpdlib.test import POSIX
 from pyftpdlib.test import remove_test_files
-from pyftpdlib.test import retry_before_failing
-from pyftpdlib.test import safe_mkdir
+from pyftpdlib.test import retry_on_failure
 from pyftpdlib.test import safe_remove
 from pyftpdlib.test import safe_rmdir
 from pyftpdlib.test import SUPPORTS_IPV4
 from pyftpdlib.test import SUPPORTS_IPV6
 from pyftpdlib.test import SUPPORTS_SENDFILE
 from pyftpdlib.test import TESTFN
-from pyftpdlib.test import TESTFN_UNICODE
-from pyftpdlib.test import TESTFN_UNICODE_2
+from pyftpdlib.test import ThreadedTestFTPd
 from pyftpdlib.test import TIMEOUT
 from pyftpdlib.test import touch
 from pyftpdlib.test import TRAVIS
+from pyftpdlib.test import unittest
 from pyftpdlib.test import USER
 from pyftpdlib.test import VERBOSITY
 from pyftpdlib.test import WINDOWS
-import pyftpdlib.__main__
 
 try:
     from StringIO import StringIO as BytesIO
 except ImportError:
     from io import BytesIO
-try:
-    import ssl
-except ImportError:
-    ssl = None
-if sys.version_info < (2, 7):
-    import unittest2 as unittest  # pip install unittest2
-else:
-    import unittest
 
-if not hasattr(unittest.TestCase, "assertRaisesRegex"):
-    unittest.TestCase.assertRaisesRegex = unittest.TestCase.assertRaisesRegexp
+import ssl
 
-sendfile = None
 if POSIX:
-    try:
-        import sendfile
-    except ImportError:
-        pass
+    import sendfile
+else:
+    sendfile = None
 
 
 class TestFtpAuthentication(unittest.TestCase):
 
     "test: USER, PASS, REIN."
-    server_class = FTPd
+    server_class = MProcessTestFTPd
     client_class = ftplib.FTP
 
     def setUp(self):
         self.server = self.server_class()
-        self.server.handler.auth_failed_timeout = 0.001
         self.server.start()
         self.client = self.client_class(timeout=TIMEOUT)
         self.client.connect(self.server.host, self.server.port)
@@ -102,8 +87,7 @@ class TestFtpAuthentication(unittest.TestCase):
         self.dummyfile = BytesIO()
 
     def tearDown(self):
-        self.server.handler.auth_failed_timeout = 5
-        self.client.close()
+        close_client(self.client)
         self.server.stop()
         if not self.file.closed:
             self.file.close()
@@ -166,7 +150,7 @@ class TestFtpAuthentication(unittest.TestCase):
         self.client.login(user=USER, passwd=PASSWD)
         self.client.sendcmd('pwd')
 
-    @retry_before_failing()
+    @retry_on_failure()
     def test_rein_during_transfer(self):
         # Test REIN while already authenticated and a transfer is
         # in progress.
@@ -176,22 +160,23 @@ class TestFtpAuthentication(unittest.TestCase):
         self.file.close()
 
         conn = self.client.transfercmd('retr ' + TESTFN)
-        self.addCleanup(conn.close)
-        rein_sent = False
-        bytes_recv = 0
-        while 1:
-            chunk = conn.recv(BUFSIZE)
-            if not chunk:
-                break
-            bytes_recv += len(chunk)
-            self.dummyfile.write(chunk)
-            if bytes_recv > INTERRUPTED_TRANSF_SIZE and not rein_sent:
-                rein_sent = True
-                # flush account, error response expected
-                self.client.sendcmd('rein')
-                self.assertRaisesRegex(ftplib.error_perm,
-                                       '530 Log in with USER and PASS first',
-                                       self.client.dir)
+        with contextlib.closing(conn):
+            rein_sent = False
+            bytes_recv = 0
+            while True:
+                chunk = conn.recv(BUFSIZE)
+                if not chunk:
+                    break
+                bytes_recv += len(chunk)
+                self.dummyfile.write(chunk)
+                if bytes_recv > INTERRUPTED_TRANSF_SIZE and not rein_sent:
+                    rein_sent = True
+                    # flush account, error response expected
+                    self.client.sendcmd('rein')
+                    self.assertRaisesRegex(
+                        ftplib.error_perm,
+                        '530 Log in with USER and PASS first',
+                        self.client.dir)
 
         # a 226 response is expected once tranfer finishes
         self.assertEqual(self.client.voidresp()[:3], '226')
@@ -228,43 +213,44 @@ class TestFtpAuthentication(unittest.TestCase):
         self.file.close()
 
         conn = self.client.transfercmd('retr ' + TESTFN)
-        self.addCleanup(conn.close)
-        rein_sent = 0
-        bytes_recv = 0
-        while 1:
-            chunk = conn.recv(BUFSIZE)
-            if not chunk:
-                break
-            bytes_recv += len(chunk)
-            self.dummyfile.write(chunk)
-            # stop transfer while it isn't finished yet
-            if bytes_recv > INTERRUPTED_TRANSF_SIZE and not rein_sent:
-                rein_sent = True
-                # flush account, expect an error response
-                self.client.sendcmd('user ' + USER)
-                self.assertRaisesRegex(ftplib.error_perm,
-                                       '530 Log in with USER and PASS first',
-                                       self.client.dir)
+        with contextlib.closing(conn):
+            rein_sent = 0
+            bytes_recv = 0
+            while True:
+                chunk = conn.recv(BUFSIZE)
+                if not chunk:
+                    break
+                bytes_recv += len(chunk)
+                self.dummyfile.write(chunk)
+                # stop transfer while it isn't finished yet
+                if bytes_recv > INTERRUPTED_TRANSF_SIZE and not rein_sent:
+                    rein_sent = True
+                    # flush account, expect an error response
+                    self.client.sendcmd('user ' + USER)
+                    self.assertRaisesRegex(
+                        ftplib.error_perm,
+                        '530 Log in with USER and PASS first',
+                        self.client.dir)
 
-        # a 226 response is expected once transfer finishes
-        self.assertEqual(self.client.voidresp()[:3], '226')
-        # account is still flushed, error response is still expected
-        self.assertRaisesRegex(ftplib.error_perm,
-                               '530 Log in with USER and PASS first',
-                               self.client.sendcmd, 'pwd')
-        # by logging-in again we should be able to execute a
-        # filesystem command
-        self.client.sendcmd('pass ' + PASSWD)
-        self.client.sendcmd('pwd')
-        self.dummyfile.seek(0)
-        datafile = self.dummyfile.read()
-        self.assertEqual(len(data), len(datafile))
-        self.assertEqual(hash(data), hash(datafile))
+            # a 226 response is expected once transfer finishes
+            self.assertEqual(self.client.voidresp()[:3], '226')
+            # account is still flushed, error response is still expected
+            self.assertRaisesRegex(ftplib.error_perm,
+                                   '530 Log in with USER and PASS first',
+                                   self.client.sendcmd, 'pwd')
+            # by logging-in again we should be able to execute a
+            # filesystem command
+            self.client.sendcmd('pass ' + PASSWD)
+            self.client.sendcmd('pwd')
+            self.dummyfile.seek(0)
+            datafile = self.dummyfile.read()
+            self.assertEqual(len(data), len(datafile))
+            self.assertEqual(hash(data), hash(datafile))
 
 
 class TestFtpDummyCmds(unittest.TestCase):
     "test: TYPE, STRU, MODE, NOOP, SYST, ALLO, HELP, SITE HELP"
-    server_class = FTPd
+    server_class = MProcessTestFTPd
     client_class = ftplib.FTP
 
     def setUp(self):
@@ -275,7 +261,7 @@ class TestFtpDummyCmds(unittest.TestCase):
         self.client.login(USER, PASSWD)
 
     def tearDown(self):
-        self.client.close()
+        close_client(self.client)
         self.server.stop()
 
     def test_type(self):
@@ -383,11 +369,12 @@ class TestFtpDummyCmds(unittest.TestCase):
 
 
 class TestFtpCmdsSemantic(unittest.TestCase):
-    server_class = FTPd
+    server_class = MProcessTestFTPd
     client_class = ftplib.FTP
-    arg_cmds = ['allo', 'appe', 'dele', 'eprt', 'mdtm', 'mode', 'mkd', 'opts',
-                'port', 'rest', 'retr', 'rmd', 'rnfr', 'rnto', 'site', 'size',
-                'stor', 'stru', 'type', 'user', 'xmkd', 'xrmd', 'site chmod']
+    arg_cmds = \
+        ['allo', 'appe', 'dele', 'eprt', 'mdtm', 'mfmt', 'mode', 'mkd', 'opts',
+         'port', 'rest', 'retr', 'rmd', 'rnfr', 'rnto', 'site', 'size', 'stor',
+         'stru', 'type', 'user', 'xmkd', 'xrmd', 'site chmod']
 
     def setUp(self):
         self.server = self.server_class()
@@ -397,7 +384,7 @@ class TestFtpCmdsSemantic(unittest.TestCase):
         self.client.login(USER, PASSWD)
 
     def tearDown(self):
-        self.client.close()
+        close_client(self.client)
         self.server.stop()
 
     def test_arg_cmds(self):
@@ -448,8 +435,8 @@ class TestFtpCmdsSemantic(unittest.TestCase):
 
 class TestFtpFsOperations(unittest.TestCase):
 
-    "test: PWD, CWD, CDUP, SIZE, RNFR, RNTO, DELE, MKD, RMD, MDTM, STAT"
-    server_class = FTPd
+    "test: PWD, CWD, CDUP, SIZE, RNFR, RNTO, DELE, MKD, RMD, MDTM, STAT, MFMT"
+    server_class = MProcessTestFTPd
     client_class = ftplib.FTP
 
     def setUp(self):
@@ -462,7 +449,7 @@ class TestFtpFsOperations(unittest.TestCase):
         self.tempdir = os.path.basename(tempfile.mkdtemp(dir=HOME))
 
     def tearDown(self):
-        self.client.close()
+        close_client(self.client)
         self.server.stop()
         safe_remove(self.tempfile)
         if os.path.exists(self.tempdir):
@@ -563,30 +550,43 @@ class TestFtpFsOperations(unittest.TestCase):
         else:
             self.fail('Exception not raised')
 
-    def test_unforeseen_mdtm_event(self):
-        # Emulate a case where the file last modification time is prior
-        # to year 1900.  This most likely will never happen unless
-        # someone specifically force the last modification time of a
-        # file in some way.
-        # To do so we temporarily override os.path.getmtime so that it
-        # returns a negative value referring to a year prior to 1900.
-        # It causes time.localtime/gmtime to raise a ValueError exception
-        # which is supposed to be handled by server.
+    def test_mfmt(self):
+        # making sure MFMT is able to modify the timestamp for the file
+        test_timestamp = "20170921013410"
+        self.client.sendcmd('mfmt ' + test_timestamp + ' ' + self.tempfile)
+        resp_time = os.path.getmtime(self.tempfile)
+        resp_time_str = time.strftime('%Y%m%d%H%M%S', time.gmtime(resp_time))
+        self.assertIn(test_timestamp, resp_time_str)
 
-        # On python 3 it seems that the trick of replacing the original
-        # method with the lambda doesn't work.
-        if not PY3:
-            _getmtime = AbstractedFS.getmtime
-            try:
-                AbstractedFS.getmtime = lambda x, y: -9000000000
-                self.assertRaisesRegex(
-                    ftplib.error_perm,
-                    "550 Can't determine file's last modification time",
-                    self.client.sendcmd, 'mdtm ' + self.tempfile)
-                # make sure client hasn't been disconnected
-                self.client.sendcmd('noop')
-            finally:
-                AbstractedFS.getmtime = _getmtime
+    def test_invalid_mfmt_timeval(self):
+        # testing MFMT with invalid timeval argument
+        test_timestamp_with_chars = "B017092101341A"
+        test_timestamp_invalid_length = "20170921"
+
+        try:
+            self.client.sendcmd(
+                'mfmt ' + test_timestamp_with_chars + ' ' + self.tempfile)
+        except ftplib.error_perm as err:
+            self.assertIn('Invalid time format', str(err))
+        else:
+            self.fail('Exception not raised')
+
+        try:
+            self.client.sendcmd(
+                'mfmt ' + test_timestamp_invalid_length + ' ' + self.tempfile)
+        except ftplib.error_perm as err:
+            self.assertIn('Invalid time format', str(err))
+        else:
+            self.fail('Exception not raised')
+
+    def test_missing_mfmt_timeval_arg(self):
+        # testing missing timeval argument
+        try:
+            self.client.sendcmd('mfmt ' + self.tempfile)
+        except ftplib.error_perm as err:
+            self.assertIn('Syntax error', str(err))
+        else:
+            self.fail('Exception not raised')
 
     def test_size(self):
         self.client.sendcmd('type a')
@@ -643,11 +643,14 @@ class TestFtpFsOperations(unittest.TestCase):
 
 class TestFtpStoreData(unittest.TestCase):
     """Test STOR, STOU, APPE, REST, TYPE."""
-    server_class = FTPd
+    server_class = MProcessTestFTPd
     client_class = ftplib.FTP
+    use_sendfile = None
 
     def setUp(self):
         self.server = self.server_class()
+        if self.use_sendfile is not None:
+            self.server.handler.use_sendfile = self.use_sendfile
         self.server.start()
         self.client = self.client_class(timeout=TIMEOUT)
         self.client.connect(self.server.host, self.server.port)
@@ -656,11 +659,14 @@ class TestFtpStoreData(unittest.TestCase):
         self.dummy_sendfile = BytesIO()
 
     def tearDown(self):
-        self.client.close()
+        close_client(self.client)
         self.server.stop()
         self.dummy_recvfile.close()
         self.dummy_sendfile.close()
         safe_remove(TESTFN)
+        if self.use_sendfile is not None:
+            from pyftpdlib.handlers import _import_sendfile
+            self.server.handler.use_sendfile = _import_sendfile() is not None
 
     def test_stor(self):
         try:
@@ -696,7 +702,7 @@ class TestFtpStoreData(unittest.TestCase):
             # "type i" before starting the transfer
             self.client.voidcmd('type a')
             with contextlib.closing(self.client.transfercmd(cmd)) as conn:
-                while 1:
+                while True:
                     buf = fp.read(blocksize)
                     if not buf:
                         break
@@ -734,7 +740,7 @@ class TestFtpStoreData(unittest.TestCase):
             # "type i" before starting the transfer
             self.client.voidcmd('type a')
             with contextlib.closing(self.client.transfercmd(cmd)) as conn:
-                while 1:
+                while True:
                     buf = fp.read(blocksize)
                     if not buf:
                         break
@@ -781,7 +787,7 @@ class TestFtpStoreData(unittest.TestCase):
                     conn.settimeout(TIMEOUT)
                     if hasattr(self.client_class, 'ssl_version'):
                         conn = ssl.wrap_socket(conn)
-                    while 1:
+                    while True:
                         buf = self.dummy_sendfile.read(8192)
                         if not buf:
                             break
@@ -874,7 +880,7 @@ class TestFtpStoreData(unittest.TestCase):
         with contextlib.closing(
                 self.client.transfercmd('stor ' + TESTFN)) as conn:
             bytes_sent = 0
-            while 1:
+            while True:
                 chunk = self.dummy_sendfile.read(BUFSIZE)
                 conn.sendall(chunk)
                 bytes_sent += len(chunk)
@@ -951,77 +957,32 @@ class TestFtpStoreData(unittest.TestCase):
                  "pysendfile not installed")
 class TestFtpStoreDataNoSendfile(TestFtpStoreData):
     """Test STOR, STOU, APPE, REST, TYPE not using sendfile()."""
-
-    def setUp(self):
-        TestFtpStoreData.setUp(self)
-        self.server.handler.use_sendfile = False
-
-    def tearDown(self):
-        TestFtpStoreData.tearDown(self)
-        self.server.handler.use_sendfile = True
-
-
-@unittest.skipUnless(POSIX, "POSIX only")
-@unittest.skipIf(sys.version_info < (3, 3) and sendfile is None,
-                 "pysendfile not installed")
-class TestSendfile(unittest.TestCase):
-    """Sendfile specific tests."""
-    server_class = FTPd
-    client_class = ftplib.FTP
-
-    def setUp(self):
-        self.server = self.server_class()
-        self.server.start()
-        self.client = self.client_class(timeout=TIMEOUT)
-        self.client.connect(self.server.host, self.server.port)
-        self.client.login(USER, PASSWD)
-        self.dummy_recvfile = BytesIO()
-        self.dummy_sendfile = BytesIO()
-
-    def tearDown(self):
-        self.client.close()
-        self.server.stop()
-        self.dummy_recvfile.close()
-        self.dummy_sendfile.close()
-        safe_remove(TESTFN)
-
-    def test_fallback(self):
-        # Makes sure that if sendfile() fails and no bytes were
-        # transmitted yet the server falls back on using plain
-        # send()
-        data = b'abcde12345' * 100000
-        self.dummy_sendfile.write(data)
-        self.dummy_sendfile.seek(0)
-        self.client.storbinary('stor ' + TESTFN, self.dummy_sendfile)
-        with mock.patch('pyftpdlib.handlers.sendfile',
-                        side_effect=OSError(errno.EINVAL)) as fun:
-            try:
-                self.client.retrbinary(
-                    'retr ' + TESTFN, self.dummy_recvfile.write)
-                assert fun.called
-                self.dummy_recvfile.seek(0)
-                datafile = self.dummy_recvfile.read()
-                self.assertEqual(len(data), len(datafile))
-                self.assertEqual(hash(data), hash(datafile))
-            finally:
-                # We do not use os.remove() because file could still be
-                # locked by ftpd thread.  If DELE through FTP fails try
-                # os.remove() as last resort.
-                if os.path.exists(TESTFN):
-                    try:
-                        self.client.delete(TESTFN)
-                    except (ftplib.Error, EOFError, socket.error):
-                        safe_remove(TESTFN)
+    use_sendfile = False
 
 
 class TestFtpRetrieveData(unittest.TestCase):
-
-    "Test RETR, REST, TYPE"
-    server_class = FTPd
+    """Test RETR, REST, TYPE"""
+    server_class = MProcessTestFTPd
     client_class = ftplib.FTP
+    use_sendfile = None
+
+    def retrieve_ascii(self, cmd, callback, blocksize=8192, rest=None):
+        """Like retrbinary but uses TYPE A instead."""
+        self.client.voidcmd('type a')
+        with contextlib.closing(
+                self.client.transfercmd(cmd, rest)) as conn:
+            conn.settimeout(TIMEOUT)
+            while True:
+                data = conn.recv(blocksize)
+                if not data:
+                    break
+                callback(data)
+        return self.client.voidresp()
 
     def setUp(self):
         self.server = self.server_class()
+        if self.use_sendfile is not None:
+            self.server.handler.use_sendfile = self.use_sendfile
         self.server.start()
         self.client = self.client_class(timeout=TIMEOUT)
         self.client.connect(self.server.host, self.server.port)
@@ -1030,13 +991,16 @@ class TestFtpRetrieveData(unittest.TestCase):
         self.dummyfile = BytesIO()
 
     def tearDown(self):
-        self.client.close()
+        close_client(self.client)
         self.server.stop()
         if not self.file.closed:
             self.file.close()
         if not self.dummyfile.closed:
             self.dummyfile.close()
         safe_remove(TESTFN)
+        if self.use_sendfile is not None:
+            from pyftpdlib.handlers import _import_sendfile
+            self.server.handler.use_sendfile = _import_sendfile() is not None
 
     def test_retr(self):
         data = b'abcde12345' * 100000
@@ -1054,32 +1018,31 @@ class TestFtpRetrieveData(unittest.TestCase):
                           "retr " + bogus, lambda x: x)
 
     def test_retr_ascii(self):
-        # Test RETR in ASCII mode.
-
-        def retrieve(cmd, callback, blocksize=8192, rest=None):
-            # like retrbinary but uses TYPE A instead
-            self.client.voidcmd('type a')
-            with contextlib.closing(
-                    self.client.transfercmd(cmd, rest)) as conn:
-                conn.settimeout(TIMEOUT)
-                while 1:
-                    data = conn.recv(blocksize)
-                    if not data:
-                        break
-                    callback(data)
-            return self.client.voidresp()
+        """Test RETR in ASCII mode."""
 
         data = (b'abcde12345' + b(os.linesep)) * 100000
         self.file.write(data)
         self.file.close()
-        retrieve("retr " + TESTFN, self.dummyfile.write)
+        self.retrieve_ascii("retr " + TESTFN, self.dummyfile.write)
         expected = data.replace(b(os.linesep), b'\r\n')
         self.dummyfile.seek(0)
         datafile = self.dummyfile.read()
         self.assertEqual(len(expected), len(datafile))
         self.assertEqual(hash(expected), hash(datafile))
 
-    @retry_before_failing()
+    def test_retr_ascii_already_crlf(self):
+        """Test ASCII mode RETR for data with CRLF line endings."""
+
+        data = b'abcde12345\r\n' * 100000
+        self.file.write(data)
+        self.file.close()
+        self.retrieve_ascii("retr " + TESTFN, self.dummyfile.write)
+        self.dummyfile.seek(0)
+        datafile = self.dummyfile.read()
+        self.assertEqual(len(data), len(datafile))
+        self.assertEqual(hash(data), hash(datafile))
+
+    @retry_on_failure()
     def test_restore_on_retr(self):
         data = b'abcde12345' * 1000000
         self.file.write(data)
@@ -1089,7 +1052,8 @@ class TestFtpRetrieveData(unittest.TestCase):
         self.client.voidcmd('TYPE I')
         with contextlib.closing(
                 self.client.transfercmd('retr ' + TESTFN)) as conn:
-            while 1:
+            conn.settimeout(TIMEOUT)
+            while True:
                 chunk = conn.recv(BUFSIZE)
                 if not chunk:
                     break
@@ -1127,19 +1091,12 @@ class TestFtpRetrieveData(unittest.TestCase):
                  "pysendfile not installed")
 class TestFtpRetrieveDataNoSendfile(TestFtpRetrieveData):
     """Test RETR, REST, TYPE by not using sendfile()."""
-
-    def setUp(self):
-        TestFtpRetrieveData.setUp(self)
-        self.server.handler.use_sendfile = False
-
-    def tearDown(self):
-        TestFtpRetrieveData.tearDown(self)
-        self.server.handler.use_sendfile = True
+    use_sendfile = False
 
 
 class TestFtpListingCmds(unittest.TestCase):
     """Test LIST, NLST, argumented STAT."""
-    server_class = FTPd
+    server_class = MProcessTestFTPd
     client_class = ftplib.FTP
 
     def setUp(self):
@@ -1151,7 +1108,7 @@ class TestFtpListingCmds(unittest.TestCase):
         touch(TESTFN)
 
     def tearDown(self):
-        self.client.close()
+        close_client(self.client)
         self.server.stop()
         os.remove(TESTFN)
 
@@ -1301,7 +1258,7 @@ class TestFtpListingCmds(unittest.TestCase):
 class TestFtpAbort(unittest.TestCase):
 
     "test: ABOR"
-    server_class = FTPd
+    server_class = MProcessTestFTPd
     client_class = ftplib.FTP
 
     def setUp(self):
@@ -1312,7 +1269,7 @@ class TestFtpAbort(unittest.TestCase):
         self.client.login(USER, PASSWD)
 
     def tearDown(self):
-        self.client.close()
+        close_client(self.client)
         self.server.stop()
 
     def test_abor_no_data(self):
@@ -1393,10 +1350,11 @@ class TestFtpAbort(unittest.TestCase):
 
 class TestThrottleBandwidth(unittest.TestCase):
     """Test ThrottledDTPHandler class."""
-    server_class = FTPd
+    server_class = MProcessTestFTPd
     client_class = ftplib.FTP
 
     def setUp(self):
+
         class CustomDTPHandler(ThrottledDTPHandler):
             # overridden so that the "awake" callback is executed
             # immediately; this way we won't introduce any slowdown
@@ -1418,7 +1376,7 @@ class TestThrottleBandwidth(unittest.TestCase):
         self.dummyfile = BytesIO()
 
     def tearDown(self):
-        self.client.close()
+        close_client(self.client)
         self.server.handler.dtp_handler.read_limit = 0
         self.server.handler.dtp_handler.write_limit = 0
         self.server.handler.dtp_handler = DTPHandler
@@ -1431,6 +1389,7 @@ class TestThrottleBandwidth(unittest.TestCase):
     def test_throttle_send(self):
         # This test doesn't test the actual speed accuracy, just
         # awakes all that code which implements the throttling.
+        # with self.server.lock:
         self.server.handler.dtp_handler.write_limit = 32768
         data = b'abcde12345' * 100000
         with open(TESTFN, 'wb') as file:
@@ -1444,6 +1403,7 @@ class TestThrottleBandwidth(unittest.TestCase):
     def test_throttle_recv(self):
         # This test doesn't test the actual speed accuracy, just
         # awakes all that code which implements the throttling.
+        # with self.server.lock:
         self.server.handler.dtp_handler.read_limit = 32768
         data = b'abcde12345' * 100000
         self.dummyfile.write(data)
@@ -1456,11 +1416,12 @@ class TestThrottleBandwidth(unittest.TestCase):
         self.assertEqual(hash(data), hash(file_data))
 
 
+@unittest.skipIf(TRAVIS, "unreliable on TRAVIS")
 class TestTimeouts(unittest.TestCase):
     """Test idle-timeout capabilities of control and data channels.
     Some tests may fail on slow machines.
     """
-    server_class = FTPd
+    server_class = MProcessTestFTPd
     client_class = ftplib.FTP
 
     def setUp(self):
@@ -1481,31 +1442,33 @@ class TestTimeouts(unittest.TestCase):
 
     def tearDown(self):
         if self.client is not None and self.server is not None:
-            self.client.close()
+            close_client(self.client)
             self.server.handler.timeout = 300
             self.server.handler.dtp_handler.timeout = 300
             self.server.handler.passive_dtp.timeout = 30
             self.server.handler.active_dtp.timeout = 30
             self.server.stop()
 
-    def test_idle_timeout(self):
-        # Test control channel timeout.  The client which does not send
-        # any command within the time specified in FTPHandler.timeout is
-        # supposed to be kicked off.
-        self._setUp(idle_timeout=0.1)
-        # fail if no msg is received within 1 second
-        self.client.sock.settimeout(1)
-        data = self.client.sock.recv(BUFSIZE)
-        self.assertEqual(data, b"421 Control connection timed out.\r\n")
-        # ensure client has been kicked off
-        self.assertRaises((socket.error, EOFError), self.client.sendcmd,
-                          'noop')
+    # Note: moved later.
+
+    # def test_idle_timeout(self):
+    #     # Test control channel timeout.  The client which does not send
+    #     # any command within the time specified in FTPHandler.timeout is
+    #     # supposed to be kicked off.
+    #     self._setUp(idle_timeout=0.1)
+    #     # fail if no msg is received within 1 second
+    #     self.client.sock.settimeout(1)
+    #     data = self.client.sock.recv(BUFSIZE)
+    #     self.assertEqual(data, b"421 Control connection timed out.\r\n")
+    #     # ensure client has been kicked off
+    #     self.assertRaises((socket.error, EOFError), self.client.sendcmd,
+    #                       'noop')
 
     def test_data_timeout(self):
         # Test data channel timeout.  The client which does not send
         # or receive any data within the time specified in
         # DTPHandler.timeout is supposed to be kicked off.
-        self._setUp(data_timeout=0.1)
+        self._setUp(data_timeout=0.5 if TRAVIS else 0.1)
         addr = self.client.makepasv()
         with contextlib.closing(socket.socket()) as s:
             s.settimeout(TIMEOUT)
@@ -1522,7 +1485,7 @@ class TestTimeouts(unittest.TestCase):
         # Impose a timeout for the data channel, then keep sending data for a
         # time which is longer than that to make sure that the code checking
         # whether the transfer stalled for with no progress is executed.
-        self._setUp(data_timeout=0.1)
+        self._setUp(data_timeout=0.5 if TRAVIS else 0.1)
         with contextlib.closing(
                 self.client.transfercmd('stor ' + TESTFN)) as sock:
             if hasattr(self.client_class, 'ssl_version'):
@@ -1540,7 +1503,8 @@ class TestTimeouts(unittest.TestCase):
     def test_idle_data_timeout1(self):
         # Tests that the control connection timeout is suspended while
         # the data channel is opened
-        self._setUp(idle_timeout=0.1, data_timeout=0.2)
+        self._setUp(idle_timeout=0.5 if TRAVIS else 0.1,
+                    data_timeout=0.6 if TRAVIS else 0.2)
         addr = self.client.makepasv()
         with contextlib.closing(socket.socket()) as s:
             s.settimeout(TIMEOUT)
@@ -1556,7 +1520,8 @@ class TestTimeouts(unittest.TestCase):
     def test_idle_data_timeout2(self):
         # Tests that the control connection timeout is restarted after
         # data channel has been closed
-        self._setUp(idle_timeout=0.1, data_timeout=0.2)
+        self._setUp(idle_timeout=0.5 if TRAVIS else 0.1,
+                    data_timeout=0.6 if TRAVIS else 0.2)
         addr = self.client.makepasv()
         with contextlib.closing(socket.socket()) as s:
             s.settimeout(TIMEOUT)
@@ -1574,7 +1539,7 @@ class TestTimeouts(unittest.TestCase):
         # Test pasv data channel timeout.  The client which does not
         # connect to the listening data socket within the time specified
         # in PassiveDTP.timeout is supposed to receive a 421 response.
-        self._setUp(pasv_timeout=0.1)
+        self._setUp(pasv_timeout=0.5 if TRAVIS else 0.1)
         self.client.makepasv()
         # fail if no msg is received within 1 second
         self.client.sock.settimeout(1)
@@ -1612,39 +1577,46 @@ class TestTimeouts(unittest.TestCase):
 
 class TestConfigurableOptions(unittest.TestCase):
     """Test those daemon options which are commonly modified by user."""
-    server_class = FTPd
+    server_class = MProcessTestFTPd
     client_class = ftplib.FTP
 
     def setUp(self):
         touch(TESTFN)
-        self.server = self.server_class()
-        self.server.start()
+        self.server = None
+        self.client = None
+
+    def connect(self):
         self.client = self.client_class(timeout=TIMEOUT)
         self.client.connect(self.server.host, self.server.port)
         self.client.login(USER, PASSWD)
 
     def tearDown(self):
-        os.remove(TESTFN)
+        if self.client is not None:
+            close_client(self.client)
         # set back options to their original value
-        self.server.server.max_cons = 0
-        self.server.server.max_cons_per_ip = 0
-        self.server.handler.banner = "pyftpdlib ready."
-        self.server.handler.max_login_attempts = 3
-        self.server.handler.auth_failed_timeout = 5
-        self.server.handler.masquerade_address = None
-        self.server.handler.masquerade_address_map = {}
-        self.server.handler.permit_privileged_ports = False
-        self.server.handler.passive_ports = None
-        self.server.handler.use_gmt_times = True
-        self.server.handler.tcp_no_delay = hasattr(socket, 'TCP_NODELAY')
-        self.server.stop()
-        self.client.close()
+        if self.server is not None:
+            self.server.server.max_cons = 0
+            self.server.server.max_cons_per_ip = 0
+            self.server.handler.banner = "pyftpdlib ready."
+            self.server.handler.max_login_attempts = 3
+            self.server.handler.auth_failed_timeout = 5
+            self.server.handler.masquerade_address = None
+            self.server.handler.masquerade_address_map = {}
+            self.server.handler.permit_privileged_ports = False
+            self.server.handler.permit_foreign_addresses = False
+            self.server.handler.passive_ports = None
+            self.server.handler.use_gmt_times = True
+            self.server.handler.tcp_no_delay = hasattr(socket, 'TCP_NODELAY')
+            self.server.stop()
+        os.remove(TESTFN)
 
     @disable_log_warning
     def test_max_connections(self):
         # Test FTPServer.max_cons attribute
+        self.server = self.server_class()
         self.server.server.max_cons = 3
-        self.client.quit()
+        self.server.start()
+
         c1 = self.client_class()
         c2 = self.client_class()
         c3 = self.client_class()
@@ -1680,8 +1652,10 @@ class TestConfigurableOptions(unittest.TestCase):
     @disable_log_warning
     def test_max_connections_per_ip(self):
         # Test FTPServer.max_cons_per_ip attribute
+        self.server = self.server_class()
         self.server.server.max_cons_per_ip = 3
-        self.client.quit()
+        self.server.start()
+
         c1 = self.client_class()
         c2 = self.client_class()
         c3 = self.client_class()
@@ -1705,16 +1679,20 @@ class TestConfigurableOptions(unittest.TestCase):
 
     def test_banner(self):
         # Test FTPHandler.banner attribute
+        self.server = self.server_class()
         self.server.handler.banner = 'hello there'
-        self.client.close()
+        self.server.start()
         self.client = self.client_class(timeout=TIMEOUT)
         self.client.connect(self.server.host, self.server.port)
         self.assertEqual(self.client.getwelcome()[4:], 'hello there')
 
     def test_max_login_attempts(self):
         # Test FTPHandler.max_login_attempts attribute.
+        self.server = self.server_class()
         self.server.handler.max_login_attempts = 1
         self.server.handler.auth_failed_timeout = 0
+        self.server.start()
+        self.connect()
         self.assertRaises(ftplib.error_perm, self.client.login, 'wrong',
                           'wrong')
         # socket.error (Windows) or EOFError (Linux) exceptions are
@@ -1725,25 +1703,30 @@ class TestConfigurableOptions(unittest.TestCase):
 
     def test_masquerade_address(self):
         # Test FTPHandler.masquerade_address attribute
-        host, port = self.client.makepasv()
-        self.assertEqual(host, self.server.host)
+        self.server = self.server_class()
         self.server.handler.masquerade_address = "256.256.256.256"
+        self.server.start()
+        self.connect()
         host, port = self.client.makepasv()
         self.assertEqual(host, "256.256.256.256")
 
     def test_masquerade_address_map(self):
         # Test FTPHandler.masquerade_address_map attribute
-        host, port = self.client.makepasv()
-        self.assertEqual(host, self.server.host)
+        self.server = self.server_class()
         self.server.handler.masquerade_address_map = {self.server.host:
                                                       "128.128.128.128"}
+        self.server.start()
+        self.connect()
         host, port = self.client.makepasv()
         self.assertEqual(host, "128.128.128.128")
 
     def test_passive_ports(self):
         # Test FTPHandler.passive_ports attribute
+        self.server = self.server_class()
         _range = list(range(40000, 60000, 200))
         self.server.handler.passive_ports = _range
+        self.server.start()
+        self.connect()
         self.assertTrue(self.client.makepasv()[1] in _range)
         self.assertTrue(self.client.makepasv()[1] in _range)
         self.assertTrue(self.client.makepasv()[1] in _range)
@@ -1753,73 +1736,36 @@ class TestConfigurableOptions(unittest.TestCase):
     def test_passive_ports_busy(self):
         # If the ports in the configured range are busy it is expected
         # that a kernel-assigned port gets chosen
+
         with contextlib.closing(socket.socket()) as s:
             s.settimeout(TIMEOUT)
             s.bind((HOST, 0))
             port = s.getsockname()[1]
+            self.server = self.server_class()
             self.server.handler.passive_ports = [port]
+            self.server.start()
+            self.connect()
             resulting_port = self.client.makepasv()[1]
             self.assertTrue(port != resulting_port)
 
-    @disable_log_warning
-    def test_permit_privileged_ports(self):
-        # Test FTPHandler.permit_privileged_ports_active attribute
-
-        # try to bind a socket on a privileged port
-        sock = None
-        for port in reversed(range(1, 1024)):
-            try:
-                socket.getservbyport(port)
-            except socket.error:
-                # not registered port; go on
-                try:
-                    sock = socket.socket(self.client.af, socket.SOCK_STREAM)
-                    sock.settimeout(TIMEOUT)
-                    sock.bind((HOST, port))
-                    break
-                except socket.error as err:
-                    if err.errno == errno.EACCES:
-                        # root privileges needed
-                        if sock is not None:
-                            sock.close()
-                        sock = None
-                        break
-                    sock.close()
-                    continue
-            else:
-                # registered port found; skip to the next one
-                continue
-        else:
-            # no usable privileged port was found
-            sock = None
-
-        self.addCleanup(sock.close)
-        self.server.handler.permit_privileged_ports = False
-        self.assertRaises(ftplib.error_perm, self.client.sendport, HOST,
-                          port)
-        if sock:
-            port = sock.getsockname()[1]
-            self.server.handler.permit_privileged_ports = True
-            sock.listen(5)
-            sock.settimeout(TIMEOUT)
-            self.client.sendport(HOST, port)
-            s, addr = sock.accept()
-            s.close()
-
+    @retry_on_failure()
     def test_use_gmt_times(self):
         # use GMT time
+        self.server = self.server_class()
         self.server.handler.use_gmt_times = True
+        self.server.start()
+        self.connect()
         gmt1 = self.client.sendcmd('mdtm ' + TESTFN)
         gmt2 = self.client.sendcmd('mlst ' + TESTFN)
         gmt3 = self.client.sendcmd('stat ' + TESTFN)
 
         # use local time
+        self.tearDown()
+        self.setUp()
+        self.server = self.server_class()
         self.server.handler.use_gmt_times = False
-
-        self.client.quit()
-        self.client.connect(self.server.host, self.server.port)
-        self.client.login(USER, PASSWD)
-
+        self.server.start()
+        self.connect()
         loc1 = self.client.sendcmd('mdtm ' + TESTFN)
         loc2 = self.client.sendcmd('mlst ' + TESTFN)
         loc3 = self.client.sendcmd('stat ' + TESTFN)
@@ -1836,282 +1782,174 @@ class TestConfigurableOptions(unittest.TestCase):
             self.assertEqual(gmt2, loc2)
             self.assertEqual(gmt3, loc3)
 
-    @unittest.skipUnless(hasattr(socket, 'TCP_NODELAY'),
-                         'TCP_NODELAY not available')
-    def test_tcp_no_delay(self):
-        def get_handler_socket():
-            # return the server's handler socket object
-            ioloop = IOLoop.instance()
-            for fd in ioloop.socket_map:
-                instance = ioloop.socket_map[fd]
-                if isinstance(instance, FTPHandler):
-                    break
-            return instance.socket
-
-        s = get_handler_socket()
-        self.assertTrue(s.getsockopt(socket.SOL_TCP, socket.TCP_NODELAY))
-        self.client.quit()
-        self.server.handler.tcp_no_delay = False
-        self.client.connect(self.server.host, self.server.port)
-        self.client.sendcmd('noop')
-        s = get_handler_socket()
-        self.assertFalse(s.getsockopt(socket.SOL_TCP, socket.TCP_NODELAY))
-
 
 class TestCallbacks(unittest.TestCase):
-    """Test FTPHandler class callback methods."""
-    server_class = FTPd
+
+    server_class = MProcessTestFTPd
     client_class = ftplib.FTP
+    TESTFN_2 = TESTFN + "-2"
 
     def setUp(self):
-        self.client = None
-        self.server = None
-        self.file = None
-        self.dummyfile = None
 
-    def _setUp(self, handler, connect=True, login=True):
-        self.tearDown()
-        FTPd.handler = handler
-        self.server = self.server_class()
-        self.server.start()
-        self.client = self.client_class(timeout=TIMEOUT)
-        if connect:
-            self.client.connect(self.server.host, self.server.port)
-            if login:
-                self.client.login(USER, PASSWD)
-        self.file = open(TESTFN, 'w+b')
-        self.dummyfile = BytesIO()
-        self._tearDown = False
+        class Handler(FTPHandler):
 
-    def tearDown(self):
-        if self.client is not None:
-            self.client.close()
-        if self.server is not None and self.server.running:
-            self.server.stop()
-        if self.file is not None:
-            self.file.close()
-        if self.dummyfile is not None:
-            self.dummyfile.close()
-        safe_remove(TESTFN)
+            def write(self, text):
+                with open(TESTFN, "at") as f:
+                    f.write(text)
 
-    def test_on_file_sent(self):
-        _file = []
+            def on_connect(self):
+                self.write("on_connect,")
 
-        class TestHandler(FTPHandler):
+            def on_disconnect(self):
+                self.write("on_disconnect,")
+
+            def on_login(self, username):
+                self.write("on_login:%s," % username)
+
+            def on_login_failed(self, username, password):
+                self.write("on_login_failed:%s+%s," % (username, password))
+
+            def on_logout(self, username):
+                self.write("on_logout:%s," % username)
 
             def on_file_sent(self, file):
-                _file.append(file)
-
-        self._setUp(TestHandler)
-        data = b'abcde12345' * 100000
-        self.file.write(data)
-        self.file.close()
-        self.client.retrbinary("retr " + TESTFN, lambda x: x)
-        # shut down the server to avoid race conditions
-        self.tearDown()
-        self.assertEqual(_file, [os.path.abspath(TESTFN)])
-
-    def test_on_file_received(self):
-        _file = []
-
-        class TestHandler(FTPHandler):
+                self.write("on_file_sent:%s," % os.path.basename(file))
 
             def on_file_received(self, file):
-                _file.append(file)
-
-        self._setUp(TestHandler)
-        data = b'abcde12345' * 100000
-        self.dummyfile.write(data)
-        self.dummyfile.seek(0)
-        self.client.storbinary('stor ' + TESTFN, self.dummyfile)
-        # shut down the server to avoid race conditions
-        self.tearDown()
-        self.assertEqual(_file, [os.path.abspath(TESTFN)])
-
-    @retry_before_failing()
-    def test_on_incomplete_file_sent(self):
-        _file = []
-
-        class TestHandler(FTPHandler):
+                self.write("on_file_received:%s," % os.path.basename(file))
 
             def on_incomplete_file_sent(self, file):
-                _file.append(file)
-
-        self._setUp(TestHandler)
-        data = b'abcde12345' * 100000
-        self.file.write(data)
-        self.file.close()
-
-        bytes_recv = 0
-        with contextlib.closing(
-                self.client.transfercmd("retr " + TESTFN, None)) as conn:
-            while 1:
-                chunk = conn.recv(BUFSIZE)
-                bytes_recv += len(chunk)
-                if bytes_recv >= INTERRUPTED_TRANSF_SIZE or not chunk:
-                    break
-        self.assertEqual(self.client.getline()[:3], "426")
-
-        # shut down the server to avoid race conditions
-        self.tearDown()
-        self.assertEqual(_file, [os.path.abspath(TESTFN)])
-
-    @unittest.skipIf(TRAVIS, "failing on Travis")
-    @retry_before_failing()
-    def test_on_incomplete_file_received(self):
-        _file = []
-
-        class TestHandler(FTPHandler):
+                self.write(
+                    "on_incomplete_file_sent:%s," % os.path.basename(file))
 
             def on_incomplete_file_received(self, file):
-                _file.append(file)
+                self.write(
+                    "on_incomplete_file_received:%s," % os.path.basename(file))
 
-        self._setUp(TestHandler)
+        safe_remove(TESTFN)
+        safe_remove(self.TESTFN_2)
+        self.server = self.server_class()
+        self.server.server.handler = Handler
+        self.server.start()
+        self.client = self.client_class(timeout=TIMEOUT)
+        self.client.connect(self.server.host, self.server.port)
+
+    def tearDown(self):
+        close_client(self.client)
+        self.server.stop()
+        safe_remove(TESTFN)
+        safe_remove(self.TESTFN_2)
+
+    def read_file(self, text):
+        stop_at = time.time() + 1
+        while time.time() <= stop_at:
+            with open(TESTFN, "rt") as f:
+                data = f.read()
+                if data == text:
+                    return
+            time.sleep(0.01)
+        self.fail("data: %r; expected: %r" % (data, text))
+
+    def test_on_disconnect(self):
+        self.client.login(USER, PASSWD)
+        self.client.close()
+        self.read_file('on_connect,on_login:%s,on_disconnect,' % USER)
+
+    def test_on_logout_quit(self):
+        self.client.login(USER, PASSWD)
+        self.client.sendcmd('quit')
+        self.read_file(
+            'on_connect,on_login:%s,on_logout:%s,on_disconnect,' % (
+                USER, USER))
+
+    def test_on_logout_rein(self):
+        self.client.login(USER, PASSWD)
+        self.client.sendcmd('rein')
+        self.read_file(
+            'on_connect,on_login:%s,on_logout:%s,' % (USER, USER))
+
+    def test_on_logout_no_pass(self):
+        # make sure on_logout() is not called if USER was provided
+        # but not PASS
+        self.client.sendcmd("user foo")
+        self.read_file('on_connect,')
+
+    def test_on_logout_user_issued_twice(self):
+        # At this point user "user" is logged in. Re-login as anonymous,
+        # then quit and expect queue == ["user", "anonymous"]
+        self.client.login(USER, PASSWD)
+        self.client.login("anonymous")
+        self.read_file(
+            'on_connect,on_login:%s,on_logout:%s,on_login:anonymous,' %
+            (USER, USER))
+
+    def test_on_login_failed(self):
+        self.assertRaises(
+            ftplib.error_perm, self.client.login, 'foo', 'bar?!?')
+        self.read_file('on_connect,on_login_failed:foo+bar?!?,')
+
+    def test_on_file_received(self):
         data = b'abcde12345' * 100000
-        self.dummyfile.write(data)
-        self.dummyfile.seek(0)
+        dummyfile = BytesIO()
+        dummyfile.write(data)
+        dummyfile.seek(0)
+        self.client.login(USER, PASSWD)
+        self.client.storbinary('stor ' + self.TESTFN_2, dummyfile)
+        self.read_file(
+            'on_connect,on_login:%s,on_file_received:%s,' % (
+                USER, self.TESTFN_2))
 
+    def test_on_file_sent(self):
+        self.client.login(USER, PASSWD)
+        data = b'abcde12345' * 100000
+        with open(self.TESTFN_2, 'wb') as f:
+            f.write(data)
+        self.client.retrbinary("retr " + self.TESTFN_2, lambda x: x)
+        self.read_file(
+            'on_connect,on_login:%s,on_file_sent:%s,' % (USER, self.TESTFN_2))
+
+    def test_on_incomplete_file_received(self):
+        self.client.login(USER, PASSWD)
+        data = b'abcde12345' * 1000000
+        dummyfile = BytesIO()
+        dummyfile.write(data)
+        dummyfile.seek(0)
         with contextlib.closing(
-                self.client.transfercmd('stor ' + TESTFN)) as conn:
+                self.client.transfercmd('stor ' + self.TESTFN_2)) as conn:
             bytes_sent = 0
-            while 1:
-                chunk = self.dummyfile.read(BUFSIZE)
+            while True:
+                chunk = dummyfile.read(BUFSIZE)
                 conn.sendall(chunk)
                 bytes_sent += len(chunk)
                 # stop transfer while it isn't finished yet
                 if bytes_sent >= INTERRUPTED_TRANSF_SIZE or not chunk:
                     self.client.putcmd('abor')
                     break
+        # If a data transfer is in progress server is supposed to send
+        # a 426 reply followed by a 226 reply.
         self.assertRaises(ftplib.error_temp, self.client.getresp)  # 426
+        self.assertEqual(self.client.getresp()[:3], "226")
+        self.read_file(
+            'on_connect,on_login:%s,on_incomplete_file_received:%s,' %
+            (USER, self.TESTFN_2))
 
-        # shut down the server to avoid race conditions
-        self.tearDown()
-        self.assertEqual(_file, [os.path.abspath(TESTFN)])
-
-    def test_on_connect(self):
-        flag = []
-
-        class TestHandler(FTPHandler):
-
-            def on_connect(self):
-                flag.append(None)
-
-        self._setUp(TestHandler, connect=False)
-        self.client.connect(self.server.host, self.server.port)
-        self.client.sendcmd('noop')
-        self.assertTrue(flag)
-
-    def test_on_disconnect(self):
-        flag = []
-
-        class TestHandler(FTPHandler):
-
-            def on_disconnect(self):
-                flag.append(None)
-
-        self._setUp(TestHandler, connect=False)
-        self.client.connect(self.server.host, self.server.port)
-        self.assertFalse(flag)
-        self.client.sendcmd('quit')
-        try:
-            self.client.sendcmd('noop')
-        except (socket.error, EOFError):
-            pass
-        else:
-            self.fail('still connected')
-        self.tearDown()
-        self.assertTrue(flag)
-
-    def test_on_login(self):
-        user = []
-
-        class TestHandler(FTPHandler):
-            auth_failed_timeout = 0
-
-            def on_login(self, username):
-                user.append(username)
-
-        self._setUp(TestHandler)
-        # shut down the server to avoid race conditions
-        self.tearDown()
-        self.assertEqual(user, [USER])
-
-    def test_on_login_failed(self):
-        pair = []
-
-        class TestHandler(FTPHandler):
-            auth_failed_timeout = 0
-
-            def on_login_failed(self, username, password):
-                pair.append((username, password))
-
-        self._setUp(TestHandler, login=False)
-        self.assertRaises(ftplib.error_perm, self.client.login, 'foo', 'bar')
-        # shut down the server to avoid race conditions
-        self.tearDown()
-        self.assertEqual(pair, [('foo', 'bar')])
-
-    def test_on_logout_quit(self):
-        user = []
-
-        class TestHandler(FTPHandler):
-
-            def on_logout(self, username):
-                user.append(username)
-
-        self._setUp(TestHandler)
-        self.client.quit()
-        # shut down the server to avoid race conditions
-        self.tearDown()
-        self.assertEqual(user, [USER])
-
-    def test_on_logout_rein(self):
-        user = []
-
-        class TestHandler(FTPHandler):
-
-            def on_logout(self, username):
-                user.append(username)
-
-        self._setUp(TestHandler)
-        self.client.sendcmd('rein')
-        # shut down the server to avoid race conditions
-        self.tearDown()
-        self.assertEqual(user, [USER])
-
-    def test_on_logout_user_issued_twice(self):
-        users = []
-
-        class TestHandler(FTPHandler):
-
-            def on_logout(self, username):
-                users.append(username)
-
-        self._setUp(TestHandler)
-        # At this point user "user" is logged in. Re-login as anonymous,
-        # then quit and expect queue == ["user", "anonymous"]
-        self.client.login("anonymous")
-        self.client.quit()
-        # shut down the server to avoid race conditions
-        self.tearDown()
-        self.assertEqual(users, [USER, 'anonymous'])
-
-    def test_on_logout_no_pass(self):
-        # make sure on_logout() is not called if USER was provided
-        # but not PASS
-        users = []
-
-        class TestHandler(FTPHandler):
-
-            def on_logout(self, username):
-                users.append(username)
-
-        self._setUp(TestHandler, login=False)
-        self.client.sendcmd("user foo")
-        self.client.quit()
-        # shut down the server to avoid race conditions
-        self.tearDown()
-        self.assertEqual(users, [])
+    def test_on_incomplete_file_sent(self):
+        self.client.login(USER, PASSWD)
+        data = b'abcde12345' * 1000000
+        with open(self.TESTFN_2, 'wb') as f:
+            f.write(data)
+        bytes_recv = 0
+        with contextlib.closing(self.client.transfercmd(
+                                "retr " + self.TESTFN_2, None)) as conn:
+            while True:
+                chunk = conn.recv(BUFSIZE)
+                bytes_recv += len(chunk)
+                if bytes_recv >= INTERRUPTED_TRANSF_SIZE or not chunk:
+                    break
+        self.assertEqual(self.client.getline()[:3], "426")
+        self.read_file(
+            'on_connect,on_login:%s,on_incomplete_file_sent:%s,' %
+            (USER, self.TESTFN_2))
 
 
 class _TestNetworkProtocols(object):
@@ -2120,9 +1958,6 @@ class _TestNetworkProtocols(object):
     Do not use this class directly, let TestIPv4Environment and
     TestIPv6Environment classes use it instead.
     """
-    server_class = FTPd
-    client_class = ftplib.FTP
-    HOST = HOST
 
     def setUp(self):
         self.server = self.server_class((self.HOST, 0))
@@ -2138,7 +1973,7 @@ class _TestNetworkProtocols(object):
             self.other_proto = "1"
 
     def tearDown(self):
-        self.client.close()
+        close_client(self.client)
         self.server.stop()
 
     def cmdresp(self, cmd):
@@ -2153,8 +1988,8 @@ class _TestNetworkProtocols(object):
         if not SUPPORTS_HYBRID_IPV6:
             # test wrong proto
             try:
-                self.client.sendcmd('eprt |%s|%s|%s|' % (self.other_proto,
-                                    self.server.host, self.server.port))
+                self.client.sendcmd('eprt |%s|%s|%s|' % (
+                    self.other_proto, self.server.host, self.server.port))
             except ftplib.error_perm as err:
                 self.assertEqual(str(err)[0:3], "522")
             else:
@@ -2240,7 +2075,7 @@ class TestIPv4Environment(_TestNetworkProtocols, unittest.TestCase):
     Runs tests contained in _TestNetworkProtocols class by using IPv4
     plus some additional specific tests.
     """
-    server_class = FTPd
+    server_class = MProcessTestFTPd
     client_class = ftplib.FTP
     HOST = '127.0.0.1'
 
@@ -2288,7 +2123,7 @@ class TestIPv6Environment(_TestNetworkProtocols, unittest.TestCase):
     Runs tests contained in _TestNetworkProtocols class by using IPv6
     plus some additional specific tests.
     """
-    server_class = FTPd
+    server_class = MProcessTestFTPd
     client_class = ftplib.FTP
     HOST = '::1'
 
@@ -2318,7 +2153,7 @@ class TestIPv6MixedEnvironment(unittest.TestCase):
     What we are going to do here is starting the server in this
     manner and try to connect by using an IPv4 client.
     """
-    server_class = FTPd
+    server_class = MProcessTestFTPd
     client_class = ftplib.FTP
     HOST = "::"
 
@@ -2329,7 +2164,7 @@ class TestIPv6MixedEnvironment(unittest.TestCase):
 
     def tearDown(self):
         if self.client is not None:
-            self.client.close()
+            close_client(self.client)
         self.server.stop()
 
     def test_port_v4(self):
@@ -2394,7 +2229,7 @@ class TestCornerCases(unittest.TestCase):
     """Tests for any kind of strange situation for the server to be in,
     mainly referring to bugs signaled on the bug tracker.
     """
-    server_class = FTPd
+    server_class = MProcessTestFTPd
     client_class = ftplib.FTP
 
     def setUp(self):
@@ -2405,9 +2240,8 @@ class TestCornerCases(unittest.TestCase):
         self.client.login(USER, PASSWD)
 
     def tearDown(self):
-        self.client.close()
-        if self.server.running:
-            self.server.stop()
+        close_client(self.client)
+        self.server.stop()
 
     def test_port_race_condition(self):
         # Refers to bug #120, first sends PORT, then disconnects the
@@ -2426,27 +2260,9 @@ class TestCornerCases(unittest.TestCase):
             bytes = hbytes + pbytes
             cmd = 'PORT ' + ','.join(bytes) + '\r\n'
             self.client.sock.sendall(b(cmd))
-            self.client.quit()
+            self.client.getresp()
             s, addr = sock.accept()
             s.close()
-
-    def test_stou_max_tries(self):
-        # Emulates case where the max number of tries to find out a
-        # unique file name when processing STOU command gets hit.
-
-        class TestFS(AbstractedFS):
-            def mkstemp(self, *args, **kwargs):
-                raise IOError(errno.EEXIST,
-                              "No usable temporary file name found")
-
-        self.server.handler.abstracted_fs = TestFS
-        try:
-            self.client.quit()
-            self.client.connect(self.server.host, self.server.port)
-            self.client.login(USER, PASSWD)
-            self.assertRaises(ftplib.error_temp, self.client.sendcmd, 'stou')
-        finally:
-            self.server.handler.abstracted_fs = AbstractedFS
 
     def test_quick_connect(self):
         # Clients that connected and disconnected quickly could cause
@@ -2480,7 +2296,6 @@ class TestCornerCases(unittest.TestCase):
         # while firing a scheduled function
         self.tearDown()
         server = FTPServer((HOST, 0), FTPHandler)
-        self.addCleanup(server.close)
         logger = logging.getLogger('pyftpdlib')
         logger.disabled = True
         try:
@@ -2491,6 +2306,7 @@ class TestCornerCases(unittest.TestCase):
             self.assertEqual(len1, len2)
         finally:
             logger.disabled = False
+            server.close()
 
     def test_active_conn_error(self):
         # we open a socket() but avoid to invoke accept() to
@@ -2533,302 +2349,382 @@ class TestCornerCases(unittest.TestCase):
             self.assertTrue(isinstance(fd, int), fd)
 
 
-# TODO: disabled as on certain platforms (OSX and Windows)
-# produces failures with python3. Will have to get back to
-# this and fix it.
-@unittest.skipIf(OSX or WINDOWS, "fails on OSX or Windows")
-class TestUnicodePathNames(unittest.TestCase):
-    """Test FTP commands and responses by using path names with non
-    ASCII characters.
-    """
-    server_class = FTPd
+# # TODO: disabled as on certain platforms (OSX and Windows)
+# # produces failures with python3. Will have to get back to
+# # this and fix it.
+# @unittest.skipIf(OSX or WINDOWS, "fails on OSX or Windows")
+# class TestUnicodePathNames(unittest.TestCase):
+#     """Test FTP commands and responses by using path names with non
+#     ASCII characters.
+#     """
+#     server_class = MProcessTestFTPd
+#     client_class = ftplib.FTP
+
+#     def setUp(self):
+#         self.server = self.server_class()
+#         self.server.start()
+#         self.client = self.client_class(timeout=TIMEOUT)
+#         self.client.encoding = 'utf8'  # PY3 only
+#         self.client.connect(self.server.host, self.server.port)
+#         self.client.login(USER, PASSWD)
+#         if PY3:
+#             safe_mkdir(bytes(TESTFN_UNICODE, 'utf8'))
+#             touch(bytes(TESTFN_UNICODE_2, 'utf8'))
+#             self.utf8fs = TESTFN_UNICODE in os.listdir('.')
+#         else:
+#             warnings.filterwarnings("ignore")
+#             safe_mkdir(TESTFN_UNICODE)
+#             touch(TESTFN_UNICODE_2)
+#             self.utf8fs = \
+#                 unicode(TESTFN_UNICODE, 'utf8') in os.listdir(u('.'))
+#             warnings.resetwarnings()
+
+#     def tearDown(self):
+#         close_client(self.client)
+#         self.server.stop()
+#         remove_test_files()
+
+#     # --- fs operations
+
+#     def test_cwd(self):
+#         if self.utf8fs:
+#             resp = self.client.cwd(TESTFN_UNICODE)
+#             self.assertTrue(TESTFN_UNICODE in resp)
+#         else:
+#             self.assertRaises(ftplib.error_perm, self.client.cwd,
+#                               TESTFN_UNICODE)
+
+#     def test_mkd(self):
+#         if self.utf8fs:
+#             os.rmdir(TESTFN_UNICODE)
+#             dirname = self.client.mkd(TESTFN_UNICODE)
+#             self.assertEqual(dirname, '/' + TESTFN_UNICODE)
+#             self.assertTrue(os.path.isdir(TESTFN_UNICODE))
+#         else:
+#             self.assertRaises(ftplib.error_perm, self.client.mkd,
+#                               TESTFN_UNICODE)
+
+#     def test_rmdir(self):
+#         if self.utf8fs:
+#             self.client.rmd(TESTFN_UNICODE)
+#         else:
+#             self.assertRaises(ftplib.error_perm, self.client.rmd,
+#                               TESTFN_UNICODE)
+
+#     def test_rnfr_rnto(self):
+#         if self.utf8fs:
+#             self.client.rename(TESTFN_UNICODE, TESTFN)
+#         else:
+#             self.assertRaises(ftplib.error_perm, self.client.rename,
+#                               TESTFN_UNICODE, TESTFN)
+
+#     def test_size(self):
+#         self.client.sendcmd('type i')
+#         if self.utf8fs:
+#             self.client.sendcmd('size ' + TESTFN_UNICODE_2)
+#         else:
+#             self.assertRaises(ftplib.error_perm, self.client.sendcmd,
+#                               'size ' + TESTFN_UNICODE_2)
+
+#     def test_mdtm(self):
+#         if self.utf8fs:
+#             self.client.sendcmd('mdtm ' + TESTFN_UNICODE_2)
+#         else:
+#             self.assertRaises(ftplib.error_perm, self.client.sendcmd,
+#                               'mdtm ' + TESTFN_UNICODE_2)
+
+#     def test_stou(self):
+#         if self.utf8fs:
+#             resp = self.client.sendcmd('stou ' + TESTFN_UNICODE)
+#             self.assertTrue(TESTFN_UNICODE in resp)
+#         else:
+#             self.assertRaises(ftplib.error_perm, self.client.sendcmd,
+#                               'stou ' + TESTFN_UNICODE)
+
+#     if hasattr(os, 'chmod'):
+#         def test_site_chmod(self):
+#             if self.utf8fs:
+#                 self.client.sendcmd('site chmod 777 ' + TESTFN_UNICODE)
+#             else:
+#                 self.assertRaises(ftplib.error_perm, self.client.sendcmd,
+#                                   'site chmod 777 ' + TESTFN_UNICODE)
+
+#     # --- listing cmds
+
+#     def _test_listing_cmds(self, cmd):
+#         ls = []
+#         self.client.retrlines(cmd, ls.append)
+#         ls = '\n'.join(ls)
+#         if self.utf8fs:
+#             self.assertTrue(TESTFN_UNICODE in ls)
+#         else:
+#             # Part of the filename which are not encodable are supposed
+#             # to have been replaced. The file should be something like
+#             # 'tmp-pyftpdlib-unicode-????'. In any case it is not
+#             # referenceable (e.g. DELE 'tmp-pyftpdlib-unicode-????'
+#             # won't work).
+#             self.assertTrue('tmp-pyftpdlib-unicode' in ls)
+
+#     def test_list(self):
+#         self._test_listing_cmds('list')
+
+#     def test_nlst(self):
+#         self._test_listing_cmds('nlst')
+
+#     def test_mlsd(self):
+#         self._test_listing_cmds('mlsd')
+
+#     def test_mlst(self):
+#         # utility function for extracting the line of interest
+#         def mlstline(cmd):
+#             return self.client.voidcmd(cmd).split('\n')[1]
+
+#         if self.utf8fs:
+#             self.assertTrue('type=dir' in
+#                             mlstline('mlst ' + TESTFN_UNICODE))
+#             self.assertTrue('/' + TESTFN_UNICODE in
+#                             mlstline('mlst ' + TESTFN_UNICODE))
+#             self.assertTrue('type=file' in
+#                             mlstline('mlst ' + TESTFN_UNICODE_2))
+#             self.assertTrue('/' + TESTFN_UNICODE_2 in
+#                             mlstline('mlst ' + TESTFN_UNICODE_2))
+#         else:
+#             self.assertRaises(ftplib.error_perm,
+#                               mlstline, 'mlst ' + TESTFN_UNICODE)
+
+#     # --- file transfer
+
+#     def test_stor(self):
+#         if self.utf8fs:
+#             data = b'abcde12345' * 500
+#             os.remove(TESTFN_UNICODE_2)
+#             dummy = BytesIO()
+#             dummy.write(data)
+#             dummy.seek(0)
+#             self.client.storbinary('stor ' + TESTFN_UNICODE_2, dummy)
+#             dummy_recv = BytesIO()
+#             self.client.retrbinary('retr ' + TESTFN_UNICODE_2,
+#                                    dummy_recv.write)
+#             dummy_recv.seek(0)
+#             self.assertEqual(dummy_recv.read(), data)
+#         else:
+#             dummy = BytesIO()
+#             self.assertRaises(ftplib.error_perm, self.client.storbinary,
+#                               'stor ' + TESTFN_UNICODE_2, dummy)
+
+#     def test_retr(self):
+#         if self.utf8fs:
+#             data = b'abcd1234' * 500
+#             with open(TESTFN_UNICODE_2, 'wb') as f:
+#                 f.write(data)
+#             dummy = BytesIO()
+#             self.client.retrbinary('retr ' + TESTFN_UNICODE_2, dummy.write)
+#             dummy.seek(0)
+#             self.assertEqual(dummy.read(), data)
+#         else:
+#             dummy = BytesIO()
+#             self.assertRaises(ftplib.error_perm, self.client.retrbinary,
+#                               'retr ' + TESTFN_UNICODE_2, dummy.write)
+
+
+class ThreadedFTPTests(unittest.TestCase):
+
+    server_class = ThreadedTestFTPd
     client_class = ftplib.FTP
 
     def setUp(self):
         self.server = self.server_class()
         self.server.start()
         self.client = self.client_class(timeout=TIMEOUT)
-        self.client.encoding = 'utf8'  # PY3 only
         self.client.connect(self.server.host, self.server.port)
         self.client.login(USER, PASSWD)
-        if PY3:
-            safe_mkdir(bytes(TESTFN_UNICODE, 'utf8'))
-            touch(bytes(TESTFN_UNICODE_2, 'utf8'))
-            self.utf8fs = TESTFN_UNICODE in os.listdir('.')
-        else:
-            warnings.filterwarnings("ignore")
-            safe_mkdir(TESTFN_UNICODE)
-            touch(TESTFN_UNICODE_2)
-            self.utf8fs = unicode(TESTFN_UNICODE, 'utf8') in os.listdir(u('.'))
-            warnings.resetwarnings()
+        self.tempfile = os.path.basename(touch(TESTFN))
+        self.tempdir = os.path.basename(tempfile.mkdtemp(dir=HOME))
+        self.dummy_recvfile = BytesIO()
+        self.dummy_sendfile = BytesIO()
 
     def tearDown(self):
-        self.client.close()
+        close_client(self.client)
         self.server.stop()
-        remove_test_files()
+        self.dummy_recvfile.close()
+        self.dummy_sendfile.close()
+        safe_remove(TESTFN)
 
-    # --- fs operations
+    def test_unforeseen_mdtm_event(self):
+        # Emulate a case where the file last modification time is prior
+        # to year 1900.  This most likely will never happen unless
+        # someone specifically force the last modification time of a
+        # file in some way.
+        # To do so we temporarily override os.path.getmtime so that it
+        # returns a negative value referring to a year prior to 1900.
+        # It causes time.localtime/gmtime to raise a ValueError exception
+        # which is supposed to be handled by server.
 
-    def test_cwd(self):
-        if self.utf8fs:
-            resp = self.client.cwd(TESTFN_UNICODE)
-            self.assertTrue(TESTFN_UNICODE in resp)
-        else:
-            self.assertRaises(ftplib.error_perm, self.client.cwd,
-                              TESTFN_UNICODE)
+        # On python 3 it seems that the trick of replacing the original
+        # method with the lambda doesn't work.
+        if not PY3:
+            _getmtime = AbstractedFS.getmtime
+            try:
+                AbstractedFS.getmtime = lambda x, y: -9000000000
+                self.assertRaisesRegex(
+                    ftplib.error_perm,
+                    "550 Can't determine file's last modification time",
+                    self.client.sendcmd, 'mdtm ' + self.tempfile)
+                # make sure client hasn't been disconnected
+                self.client.sendcmd('noop')
+            finally:
+                AbstractedFS.getmtime = _getmtime
 
-    def test_mkd(self):
-        if self.utf8fs:
-            os.rmdir(TESTFN_UNICODE)
-            dirname = self.client.mkd(TESTFN_UNICODE)
-            self.assertEqual(dirname, '/' + TESTFN_UNICODE)
-            self.assertTrue(os.path.isdir(TESTFN_UNICODE))
-        else:
-            self.assertRaises(ftplib.error_perm, self.client.mkd,
-                              TESTFN_UNICODE)
+    def test_stou_max_tries(self):
+        # Emulates case where the max number of tries to find out a
+        # unique file name when processing STOU command gets hit.
 
-    def test_rmdir(self):
-        if self.utf8fs:
-            self.client.rmd(TESTFN_UNICODE)
-        else:
-            self.assertRaises(ftplib.error_perm, self.client.rmd,
-                              TESTFN_UNICODE)
+        class TestFS(AbstractedFS):
 
-    def test_rnfr_rnto(self):
-        if self.utf8fs:
-            self.client.rename(TESTFN_UNICODE, TESTFN)
-        else:
-            self.assertRaises(ftplib.error_perm, self.client.rename,
-                              TESTFN_UNICODE, TESTFN)
+            def mkstemp(self, *args, **kwargs):
+                raise IOError(errno.EEXIST,
+                              "No usable temporary file name found")
 
-    def test_size(self):
-        self.client.sendcmd('type i')
-        if self.utf8fs:
-            self.client.sendcmd('size ' + TESTFN_UNICODE_2)
-        else:
-            self.assertRaises(ftplib.error_perm, self.client.sendcmd,
-                              'size ' + TESTFN_UNICODE_2)
+        with self.server.lock:
+            self.server.handler.abstracted_fs = TestFS
+        try:
+            self.client.quit()
+            self.client.connect(self.server.host, self.server.port)
+            self.client.login(USER, PASSWD)
+            self.assertRaises(ftplib.error_temp, self.client.sendcmd, 'stou')
+        finally:
+            with self.server.lock:
+                self.server.handler.abstracted_fs = AbstractedFS
 
-    def test_mdtm(self):
-        if self.utf8fs:
-            self.client.sendcmd('mdtm ' + TESTFN_UNICODE_2)
-        else:
-            self.assertRaises(ftplib.error_perm, self.client.sendcmd,
-                              'mdtm ' + TESTFN_UNICODE_2)
+    def test_idle_timeout(self):
+        # Test control channel timeout.  The client which does not send
+        # any command within the time specified in FTPHandler.timeout is
+        # supposed to be kicked off.
+        with self.server.lock:
+            self.server.handler.timeout = 0.1
 
-    def test_stou(self):
-        if self.utf8fs:
-            resp = self.client.sendcmd('stou ' + TESTFN_UNICODE)
-            self.assertTrue(TESTFN_UNICODE in resp)
-        else:
-            self.assertRaises(ftplib.error_perm, self.client.sendcmd,
-                              'stou ' + TESTFN_UNICODE)
+        try:
+            self.client.quit()
+            self.client.connect()
+            self.client.login(USER, PASSWD)
+            # fail if no msg is received within 1 second
+            self.client.sock.settimeout(1)
+            data = self.client.sock.recv(BUFSIZE)
+            self.assertEqual(data, b"421 Control connection timed out.\r\n")
+            # ensure client has been kicked off
+            self.assertRaises((socket.error, EOFError), self.client.sendcmd,
+                              'noop')
+        finally:
+            with self.server.lock:
+                self.server.handler.timeout = 0.1
 
-    if hasattr(os, 'chmod'):
-        def test_site_chmod(self):
-            if self.utf8fs:
-                self.client.sendcmd('site chmod 777 ' + TESTFN_UNICODE)
+    @unittest.skipUnless(hasattr(socket, 'TCP_NODELAY'),
+                         'TCP_NODELAY not available')
+    def test_tcp_no_delay(self):
+        s = get_server_handler().socket
+        self.assertTrue(s.getsockopt(socket.SOL_TCP, socket.TCP_NODELAY))
+        self.client.quit()
+        with self.server.lock:
+            self.server.handler.tcp_no_delay = False
+        self.client.connect(self.server.host, self.server.port)
+        self.client.sendcmd('noop')
+        s = get_server_handler().socket
+        self.assertFalse(s.getsockopt(socket.SOL_TCP, socket.TCP_NODELAY))
+
+    def test_permit_foreign_address_false(self):
+        handler = get_server_handler()
+        with self.server.lock:
+            handler.permit_foreign_addresses = False
+            handler.remote_ip = '9.9.9.9'
+        with self.assertRaises(ftplib.error_perm) as cm:
+            self.client.makeport()
+        self.assertIn('foreign address', str(cm.exception))
+
+    def test_permit_foreign_address_true(self):
+        handler = get_server_handler()
+        with self.server.lock:
+            handler.permit_foreign_addresses = True
+            handler.remote_ip = '9.9.9.9'
+        s = self.client.makeport()
+        s.close()
+
+    @disable_log_warning
+    def test_permit_privileged_ports(self):
+        # Test FTPHandler.permit_privileged_ports_active attribute
+
+        # try to bind a socket on a privileged port
+        sock = None
+        for port in reversed(range(1, 1024)):
+            try:
+                socket.getservbyport(port)
+            except socket.error:
+                # not registered port; go on
+                try:
+                    sock = socket.socket(self.client.af, socket.SOCK_STREAM)
+                    self.addCleanup(sock.close)
+                    sock.settimeout(TIMEOUT)
+                    sock.bind((HOST, port))
+                    break
+                except socket.error as err:
+                    if err.errno == errno.EACCES:
+                        # root privileges needed
+                        if sock is not None:
+                            sock.close()
+                        sock = None
+                        break
+                    sock.close()
+                    continue
             else:
-                self.assertRaises(ftplib.error_perm, self.client.sendcmd,
-                                  'site chmod 777 ' + TESTFN_UNICODE)
-
-    # --- listing cmds
-
-    def _test_listing_cmds(self, cmd):
-        ls = []
-        self.client.retrlines(cmd, ls.append)
-        ls = '\n'.join(ls)
-        if self.utf8fs:
-            self.assertTrue(TESTFN_UNICODE in ls)
+                # registered port found; skip to the next one
+                continue
         else:
-            # Part of the filename which are not encodable are supposed
-            # to have been replaced. The file should be something like
-            # 'tmp-pyftpdlib-unicode-????'. In any case it is not
-            # referenceable (e.g. DELE 'tmp-pyftpdlib-unicode-????'
-            # won't work).
-            self.assertTrue('tmp-pyftpdlib-unicode' in ls)
+            # no usable privileged port was found
+            sock = None
 
-    def test_list(self):
-        self._test_listing_cmds('list')
+        with self.server.lock:
+            self.server.handler.permit_privileged_ports = False
+        self.assertRaises(ftplib.error_perm, self.client.sendport, HOST,
+                          port)
+        if sock:
+            port = sock.getsockname()[1]
+            with self.server.lock:
+                self.server.handler.permit_privileged_ports = True
+            sock.listen(5)
+            sock.settimeout(TIMEOUT)
+            self.client.sendport(HOST, port)
+            s, addr = sock.accept()
+            s.close()
 
-    def test_nlst(self):
-        self._test_listing_cmds('nlst')
-
-    def test_mlsd(self):
-        self._test_listing_cmds('mlsd')
-
-    def test_mlst(self):
-        # utility function for extracting the line of interest
-        def mlstline(cmd):
-            return self.client.voidcmd(cmd).split('\n')[1]
-
-        if self.utf8fs:
-            self.assertTrue('type=dir' in
-                            mlstline('mlst ' + TESTFN_UNICODE))
-            self.assertTrue('/' + TESTFN_UNICODE in
-                            mlstline('mlst ' + TESTFN_UNICODE))
-            self.assertTrue('type=file' in
-                            mlstline('mlst ' + TESTFN_UNICODE_2))
-            self.assertTrue('/' + TESTFN_UNICODE_2 in
-                            mlstline('mlst ' + TESTFN_UNICODE_2))
-        else:
-            self.assertRaises(ftplib.error_perm,
-                              mlstline, 'mlst ' + TESTFN_UNICODE)
-
-    # --- file transfer
-
-    def test_stor(self):
-        if self.utf8fs:
-            data = b'abcde12345' * 500
-            os.remove(TESTFN_UNICODE_2)
-            dummy = BytesIO()
-            dummy.write(data)
-            dummy.seek(0)
-            self.client.storbinary('stor ' + TESTFN_UNICODE_2, dummy)
-            dummy_recv = BytesIO()
-            self.client.retrbinary('retr ' + TESTFN_UNICODE_2,
-                                   dummy_recv.write)
-            dummy_recv.seek(0)
-            self.assertEqual(dummy_recv.read(), data)
-        else:
-            dummy = BytesIO()
-            self.assertRaises(ftplib.error_perm, self.client.storbinary,
-                              'stor ' + TESTFN_UNICODE_2, dummy)
-
-    def test_retr(self):
-        if self.utf8fs:
-            data = b'abcd1234' * 500
-            with open(TESTFN_UNICODE_2, 'wb') as f:
-                f.write(data)
-            dummy = BytesIO()
-            self.client.retrbinary('retr ' + TESTFN_UNICODE_2, dummy.write)
-            dummy.seek(0)
-            self.assertEqual(dummy.read(), data)
-        else:
-            dummy = BytesIO()
-            self.assertRaises(ftplib.error_perm, self.client.retrbinary,
-                              'retr ' + TESTFN_UNICODE_2, dummy.write)
-
-
-class TestCommandLineParser(unittest.TestCase):
-    """Test command line parser."""
-    SYSARGV = sys.argv
-    STDERR = sys.stderr
-
-    def setUp(self):
-        class DummyFTPServer(FTPServer):
-            """An overridden version of FTPServer class which forces
-            serve_forever() to return immediately.
-            """
-            def serve_forever(self, *args, **kwargs):
-                return
-
-        if PY3:
-            import io
-            self.devnull = io.StringIO()
-        else:
-            self.devnull = BytesIO()
-        sys.argv = self.SYSARGV[:]
-        sys.stderr = self.STDERR
-        self.original_ftpserver_class = FTPServer
-        pyftpdlib.__main__.FTPServer = DummyFTPServer
-
-    def tearDown(self):
-        self.devnull.close()
-        sys.argv = self.SYSARGV[:]
-        sys.stderr = self.STDERR
-        pyftpdlib.servers.FTPServer = self.original_ftpserver_class
-        safe_rmdir(TESTFN)
-
-    def test_a_option(self):
-        sys.argv += ["-i", "localhost", "-p", "0"]
-        pyftpdlib.__main__.main()
-        sys.argv = self.SYSARGV[:]
-
-        # no argument
-        sys.argv += ["-a"]
-        sys.stderr = self.devnull
-        self.assertRaises(SystemExit, pyftpdlib.__main__.main)
-
-    def test_p_option(self):
-        sys.argv += ["-p", "0"]
-        pyftpdlib.__main__.main()
-
-        # no argument
-        sys.argv = self.SYSARGV[:]
-        sys.argv += ["-p"]
-        sys.stderr = self.devnull
-        self.assertRaises(SystemExit, pyftpdlib.__main__.main)
-
-        # invalid argument
-        sys.argv += ["-p foo"]
-        self.assertRaises(SystemExit, pyftpdlib.__main__.main)
-
-    def test_w_option(self):
-        sys.argv += ["-w", "-p", "0"]
-        with warnings.catch_warnings():
-            warnings.filterwarnings("error")
-            self.assertRaises(RuntimeWarning, pyftpdlib.__main__.main)
-
-        # unexpected argument
-        sys.argv = self.SYSARGV[:]
-        sys.argv += ["-w foo"]
-        sys.stderr = self.devnull
-        self.assertRaises(SystemExit, pyftpdlib.__main__.main)
-
-    def test_d_option(self):
-        sys.argv += ["-d", TESTFN, "-p", "0"]
-        safe_mkdir(TESTFN)
-        pyftpdlib.__main__.main()
-
-        # without argument
-        sys.argv = self.SYSARGV[:]
-        sys.argv += ["-d"]
-        sys.stderr = self.devnull
-        self.assertRaises(SystemExit, pyftpdlib.__main__.main)
-
-        # no such directory
-        sys.argv = self.SYSARGV[:]
-        sys.argv += ["-d %s" % TESTFN]
-        safe_rmdir(TESTFN)
-        self.assertRaises(ValueError, pyftpdlib.__main__.main)
-
-    def test_r_option(self):
-        sys.argv += ["-r 60000-61000", "-p", "0"]
-        pyftpdlib.__main__.main()
-
-        # without arg
-        sys.argv = self.SYSARGV[:]
-        sys.argv += ["-r"]
-        sys.stderr = self.devnull
-        self.assertRaises(SystemExit, pyftpdlib.__main__.main)
-
-        # wrong arg
-        sys.argv = self.SYSARGV[:]
-        sys.argv += ["-r yyy-zzz"]
-        self.assertRaises(SystemExit, pyftpdlib.__main__.main)
-
-    def test_v_option(self):
-        sys.argv += ["-v"]
-        self.assertRaises(SystemExit, pyftpdlib.__main__.main)
-
-        # unexpected argument
-        sys.argv = self.SYSARGV[:]
-        sys.argv += ["-v foo"]
-        sys.stderr = self.devnull
-        self.assertRaises(SystemExit, pyftpdlib.__main__.main)
-
-    def test_V_option(self):
-        with mock.patch('pyftpdlib.__main__.config_logging') as fun:
-            sys.argv += ["-V"]
-            pyftpdlib.__main__.main()
-            fun.assert_called_once_with(level=logging.DEBUG)
-
-        # unexpected argument
-        sys.argv = self.SYSARGV[:]
-        sys.argv += ["-V foo"]
-        sys.stderr = self.devnull
-        self.assertRaises(SystemExit, pyftpdlib.__main__.main)
+    @unittest.skipUnless(POSIX, "POSIX only")
+    @unittest.skipIf(sys.version_info < (3, 3) and sendfile is None,
+                     "pysendfile not installed")
+    def test_sendfile_fails(self):
+        # Makes sure that if sendfile() fails and no bytes were
+        # transmitted yet the server falls back on using plain
+        # send()
+        data = b'abcde12345' * 100000
+        self.dummy_sendfile.write(data)
+        self.dummy_sendfile.seek(0)
+        self.client.storbinary('stor ' + TESTFN, self.dummy_sendfile)
+        with mock.patch('pyftpdlib.handlers.sendfile',
+                        side_effect=OSError(errno.EINVAL)) as fun:
+            try:
+                self.client.retrbinary(
+                    'retr ' + TESTFN, self.dummy_recvfile.write)
+                assert fun.called
+                self.dummy_recvfile.seek(0)
+                datafile = self.dummy_recvfile.read()
+                self.assertEqual(len(data), len(datafile))
+                self.assertEqual(hash(data), hash(datafile))
+            finally:
+                # We do not use os.remove() because file could still be
+                # locked by ftpd thread.  If DELE through FTP fails try
+                # os.remove() as last resort.
+                if os.path.exists(TESTFN):
+                    try:
+                        self.client.delete(TESTFN)
+                    except (ftplib.Error, EOFError, socket.error):
+                        safe_remove(TESTFN)
 
 
 configure_logging()

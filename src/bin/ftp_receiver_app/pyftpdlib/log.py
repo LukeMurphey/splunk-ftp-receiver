@@ -1,4 +1,4 @@
-# Copyright (C) 2007-2016 Giampaolo Rodola' <g.rodola@gmail.com>.
+# Copyright (C) 2007 Giampaolo Rodola' <g.rodola@gmail.com>.
 # Use of this source code is governed by MIT license that can be
 # found in the LICENSE file.
 
@@ -36,6 +36,7 @@ def _stderr_supports_color():
             pass
     return color
 
+
 # configurable options
 LEVEL = logging.INFO
 PREFIX = '[%(levelname)1.1s %(asctime)s]'
@@ -52,6 +53,7 @@ class LogFormatter(logging.Formatter):
     * Timestamps on every log line.
     * Robust against str/bytes encoding problems.
     """
+
     def __init__(self, *args, **kwargs):
         logging.Formatter.__init__(self, *args, **kwargs)
         self._coloured = COLOURED and _stderr_supports_color()
