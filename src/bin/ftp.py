@@ -17,7 +17,8 @@ from ftp_receiver_app.pyftpdlib.authorizers import DummyAuthorizer, Authenticati
 from ftp_receiver_app.pyftpdlib.handlers import FTPHandler
 from ftp_receiver_app.pyftpdlib.servers import FTPServer
 
-import splunk
+from splunk.auth import getSessionKey
+from splunk import AuthenticationFailed as SplunkAuthenticationFailed
 import splunk.entity as entity
 
 class SplunkAuthorizer(DummyAuthorizer):
@@ -100,8 +101,8 @@ class SplunkAuthorizer(DummyAuthorizer):
 
         # See if the user account is valid
         try:
-            session_key = splunk.auth.getSessionKey(username=username, password=password)
-        except splunk.AuthenticationFailed:
+            session_key = getSessionKey(username=username, password=password)
+        except SplunkAuthenticationFailed:
             self.logger.info("Failed to authenticate, username=%s", username)
             raise AuthenticationFailed("Authentication failed")
 
@@ -120,10 +121,10 @@ class SplunkAuthorizer(DummyAuthorizer):
         # Stop if the user doesn't have permission
         if len(perms) == 0:
             self.logger.info("User lacks capabilities (needs ftp_read, ftp_write or " +
-                             "ftp_full_control), username=%s", username)
+                            "ftp_full_control), username=%s", username)
 
             raise AuthenticationFailed("User does not have the proper capabilities " +
-                                       "(needs ftp_read, ftp_write or ftp_full_control)")
+                                    "(needs ftp_read, ftp_write or ftp_full_control)")
 
         # Add the user
         self.logger.info("User authenticated, username=%s, perm=%s", username, perm_string)
@@ -189,8 +190,8 @@ class FTPPathField(Field):
 
         return paths
 
-    def to_python(self, value):
-        Field.to_python(self, value)
+    def to_python(self, value, session_key=None):
+        Field.to_python(self, value, session_key)
 
         # Resolve the path
         resolved_path = os.path.normpath(os.path.join(os.environ['SPLUNK_HOME'], value))
