@@ -1121,7 +1121,7 @@ Below is an example of the entry in the file:
 			<isset property="appinspect.present"/>
  			<!-- Run appinspect on the package -->
 			<then>
-				<exec failonerror="true" executable="${value.test.appinspect_path}" dir="${value.build.packageoutput.directory}">
+				<exec failonerror="true" executable="${value.test.appinspect_path}">
 					<arg line="inspect" />
 					<arg line="${value.build.package.file}" />
 				</exec>
