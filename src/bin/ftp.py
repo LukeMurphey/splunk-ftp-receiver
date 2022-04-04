@@ -9,8 +9,8 @@ import os
 path_to_mod_input_lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'modular_input.zip')
 sys.path.insert(0, path_to_mod_input_lib)
 
-sys.path.append(os.path.join("..", "src", "bin"))
-sys.path.append(os.path.join("..", "src", "bin", "ftp_receiver_app"))
+path_to_py_libs = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ftp_receiver_app')
+sys.path.append(path_to_py_libs)
 
 from splunk.clilib.bundle_paths import make_splunkhome_path
 
