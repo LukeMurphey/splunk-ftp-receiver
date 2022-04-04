@@ -5,7 +5,6 @@ This module defines a modular input that wires up Splunk to an FTP server (provi
 import sys
 import time
 import os
-import sys
 
 path_to_mod_input_lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'modular_input.zip')
 sys.path.insert(0, path_to_mod_input_lib)
