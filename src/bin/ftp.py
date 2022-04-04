@@ -10,12 +10,16 @@ import sys
 path_to_mod_input_lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'modular_input.zip')
 sys.path.insert(0, path_to_mod_input_lib)
 
+sys.path.append(os.path.join("..", "src", "bin"))
+sys.path.append(os.path.join("..", "src", "bin", "ftp_receiver_app"))
+
 from splunk.clilib.bundle_paths import make_splunkhome_path
 
 from modular_input import ModularInput, Field, IntegerField, FieldValidationException
 from ftp_receiver_app.pyftpdlib.authorizers import DummyAuthorizer, AuthenticationFailed
 from ftp_receiver_app.pyftpdlib.handlers import FTPHandler
 from ftp_receiver_app.pyftpdlib.servers import FTPServer
+from ftp_receiver_app.pyftpdlib.handlers import TLS_FTPHandler
 
 from splunk.auth import getSessionKey
 from splunk import AuthenticationFailed as SplunkAuthenticationFailed
@@ -249,14 +253,15 @@ class FTPInput(ModularInput):
                 IntegerField("port", "Port", 'The port to run the FTP server on', none_allowed=False, empty_allowed=False),
                 FTPPathField("path", "Path", 'The path to place the received files; relative paths are based on $SPLUNK_HOME', none_allowed=False, empty_allowed=False),
                 Field("address", "Address to Listen on", 'The address to have the FTP server listen on; leave blank to listen on all interfaces', none_allowed=True, empty_allowed=True),
-                #DurationField("interval", "Interval", "The interval defining how often to make sure the server is running", empty_allowed=True, none_allowed=True)
+                FTPPathField("certfile", "Certificate File", 'The path to the certificate; relative paths are based on $SPLUNK_HOME', none_allowed=False, empty_allowed=False),
+                FTPPathField("keyfile", "Key File", 'The path to the key file; relative paths are based on $SPLUNK_HOME', none_allowed=False, empty_allowed=False),
                 ]
 
         ModularInput.__init__(self, scheme_args, args, logger_name="ftp_modular_input")
 
         self.ftp_daemons = []
 
-    def start_server(self, address, port, path, callback):
+    def start_server(self, address, port, path, callback, certfile=None, keyfile=None):
         """
         Start the FTP server on the given port.
         """
@@ -329,8 +334,18 @@ class FTPInput(ModularInput):
                     'file' : file
                 })
 
+
+        class SplunkFTPSHandler(SplunkFTPHandler, TLS_FTPHandler):
+            pass
+
         # Instantiate FTP handler class
-        handler = SplunkFTPHandler
+        if certfile is not None:
+            handler = SplunkFTPSHandler
+            handler.certfile = certfile
+            handler.keyfile = keyfile
+        else:
+            handler = SplunkFTPHandler
+        
         handler.authorizer = authorizer
 
         # Define a customized banner (string returned when client connects)
@@ -370,7 +385,11 @@ class FTPInput(ModularInput):
         index = cleaned_params.get("index", "default")
         path = cleaned_params.get("path", None)
         address = cleaned_params.get("address", "")
+
         source = stanza
+
+        certfile = cleaned_params.get("certfile", None)
+        keyfile = cleaned_params.get("keyfile", None)
 
         # Make the path if necessary
         try:
@@ -407,7 +426,7 @@ class FTPInput(ModularInput):
 
         while not started and attempts < FTPInput.MAX_ATTEMPTS_TO_START_SERVER:
             try:
-                self.start_server(address, port, path, callback)
+                self.start_server(address, port, path, callback, certfile, keyfile)
                 started = True
             except IOError:
 
