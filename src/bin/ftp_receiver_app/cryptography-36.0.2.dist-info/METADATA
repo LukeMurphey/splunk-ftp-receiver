@@ -34,6 +34,10 @@ Classifier: Programming Language :: Python :: Implementation :: PyPy
 Classifier: Topic :: Security :: Cryptography
 Requires-Python: >=3.6
 Description-Content-Type: text/x-rst
+License-File: LICENSE
+License-File: LICENSE.APACHE
+License-File: LICENSE.BSD
+License-File: LICENSE.PSF
 Requires-Dist: cffi (>=1.12)
 Provides-Extra: docs
 Requires-Dist: sphinx (!=1.8.0,!=3.1.0,!=3.1.1,>=1.6.5) ; extra == 'docs'

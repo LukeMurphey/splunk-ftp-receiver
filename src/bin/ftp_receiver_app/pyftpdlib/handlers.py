@@ -22,6 +22,8 @@ try:
 except ImportError:
     pwd = grp = None
 
+from OpenSSL import SSL
+
 try:
     from OpenSSL import SSL  # requires "pip install pyopenssl"
 except ImportError:
