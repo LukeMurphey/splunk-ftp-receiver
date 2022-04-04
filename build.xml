@@ -12,6 +12,7 @@
 			<arg value="requirements.txt"/>
 			<arg value="-t"/>
 			<arg value="src/bin/ftp_receiver_app"/>
+			<arg value="--upgrade"/>
 		</exec>
     </target>
 </project>
