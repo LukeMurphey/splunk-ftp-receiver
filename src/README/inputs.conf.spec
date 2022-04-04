@@ -10,5 +10,8 @@ path = <value>
 address = <value>
 * The address to have the FTP server listen on
 
-#interval = <value>
-#* How often to verify that the FTP server is running
+certfile = <value>
+* The path to the certificate file
+
+keyfile = <value>
+* The path to the key file
