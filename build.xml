@@ -2,4 +2,16 @@
 	
 	<import file="basebuild.xml"/>
 	
+    <!-- ================================= 
+          target: install_reqs
+         ================================= -->
+    <target name="install_reqs" depends="">
+		<exec failonerror="true" executable="pip" outputproperty="@{outputproperty}"> <!-- Fail on error is set to true in order to prevent a bad build number from being included -->
+			<arg value="install"/>
+			<arg value="-r"/>
+			<arg value="requirements.txt"/>
+			<arg value="-t"/>
+			<arg value="src/bin/ftp_receiver_app"/>
+		</exec>
+    </target>
 </project>
