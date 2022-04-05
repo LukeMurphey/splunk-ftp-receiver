@@ -18,7 +18,6 @@ from modular_input import ModularInput, Field, IntegerField, FieldValidationExce
 from ftp_receiver_app.pyftpdlib.authorizers import DummyAuthorizer, AuthenticationFailed
 from ftp_receiver_app.pyftpdlib.handlers import FTPHandler
 from ftp_receiver_app.pyftpdlib.servers import FTPServer
-from ftp_receiver_app.pyftpdlib.handlers import TLS_FTPHandler
 
 from splunk.auth import getSessionKey
 from splunk import AuthenticationFailed as SplunkAuthenticationFailed
@@ -192,7 +191,7 @@ class FTPPathField(Field):
 
             path_so_far = os.path.join(path_so_far, path_part)
 
-            paths.append(os.path.normpath(os.path.join(os.environ['SPLUNK_HOME'],path_so_far)))
+            paths.append(os.path.normpath(os.path.join(os.environ['SPLUNK_HOME'], path_so_far)))
 
         return paths
 
@@ -234,6 +233,9 @@ class FTPPathField(Field):
 
         # Return the path that is normalized and resolved
         return resolved_path
+
+class EncryptionNotSupported(Exception):
+    pass
 
 class FTPInput(ModularInput):
     """
@@ -334,11 +336,17 @@ class FTPInput(ModularInput):
                 })
 
 
-        class SplunkFTPSHandler(SplunkFTPHandler, TLS_FTPHandler):
-            pass
+        try:
+            from ftp_receiver_app.pyftpdlib.handlers import TLS_FTPHandler
+            class SplunkFTPSHandler(SplunkFTPHandler, TLS_FTPHandler):
+                pass
+        except ImportError:
+            SplunkFTPSHandler = None
 
         # Instantiate FTP handler class
-        if certfile is not None:
+        if certfile is not None and len(certfile) > 0 and SplunkFTPSHandler is None:
+            raise EncryptionNotSupported()
+        elif certfile is not None and len(certfile) > 0 and SplunkFTPSHandler is not None:
             handler = SplunkFTPSHandler
             handler.certfile = certfile
             handler.keyfile = keyfile
@@ -390,6 +398,8 @@ class FTPInput(ModularInput):
         certfile = cleaned_params.get("certfile", None)
         keyfile = cleaned_params.get("keyfile", None)
 
+        self.logger.debug('PID is %i/%i', os.getpid(), os.getppid())
+
         # Make the path if necessary
         try:
             os.mkdir(path)
@@ -425,8 +435,8 @@ class FTPInput(ModularInput):
 
         while not started and attempts < FTPInput.MAX_ATTEMPTS_TO_START_SERVER:
             try:
-                self.start_server(address, port, path, callback, certfile, keyfile)
-                started = True
+                if self.start_server(address, port, path, callback, certfile, keyfile) is not None:
+                    started = True
             except IOError:
 
                 # Log a message noting that port is taken
@@ -436,7 +446,9 @@ class FTPInput(ModularInput):
                 started = False
                 time.sleep(2)
                 attempts = attempts + 1
-
+            except EncryptionNotSupported:
+                self.logger.warn("A request was made for a server with encryption support but SSL/TLS support is not available. See the README for how to install the libraries in order to enable SSL/TLS support.")
+                sys.exit(-1)
 
 if __name__ == '__main__':
     ftp_input = None
@@ -445,6 +457,8 @@ if __name__ == '__main__':
         ftp_input = FTPInput()
         ftp_input.execute()
         sys.exit(0)
+    except EncryptionNotSupported:
+        sys.exit(-1)
     except Exception:
         if ftp_input is not None and ftp_input.logger is not None:
             # This logs general exceptions that would have been unhandled otherwise
