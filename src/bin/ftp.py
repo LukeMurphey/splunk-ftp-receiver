@@ -252,8 +252,8 @@ class FTPInput(ModularInput):
                 IntegerField("port", "Port", 'The port to run the FTP server on', none_allowed=False, empty_allowed=False),
                 FTPPathField("path", "Path", 'The path to place the received files; relative paths are based on $SPLUNK_HOME', none_allowed=False, empty_allowed=False),
                 Field("address", "Address to Listen on", 'The address to have the FTP server listen on; leave blank to listen on all interfaces', none_allowed=True, empty_allowed=True),
-                FilePathField("certfile", "Certificate File", 'The path to the certificate; relative paths are based on $SPLUNK_HOME', none_allowed=False, empty_allowed=False),
-                FilePathField("keyfile", "Key File", 'The path to the key file; relative paths are based on $SPLUNK_HOME', none_allowed=False, empty_allowed=False),
+                FilePathField("certfile", "Certificate File", 'The path to the certificate; relative paths are based on $SPLUNK_HOME', none_allowed=True, empty_allowed=True),
+                FilePathField("keyfile", "Key File", 'The path to the key file; relative paths are based on $SPLUNK_HOME', none_allowed=True, empty_allowed=True),
                 ]
 
         ModularInput.__init__(self, scheme_args, args, logger_name="ftp_modular_input")
