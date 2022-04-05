@@ -19,6 +19,4 @@
 			<arg value="--upgrade"/>
         </exec>
     </target>
-
-	<target name="compile" depends="install_reqs" />
 </project>
