@@ -6,13 +6,19 @@
           target: install_reqs
          ================================= -->
     <target name="install_reqs" depends="">
-		<exec failonerror="true" executable="pip" outputproperty="@{outputproperty}"> <!-- Fail on error is set to true in order to prevent a bad build number from being included -->
-			<arg value="install"/>
+        <exec failonerror="true" executable="${value.deploy.splunk_home}/bin/splunk">
+        	<arg line="cmd" />
+        	<arg line="python" />
+        	<arg line="-m" />
+			<arg line="pip" />
+			<arg line="install" />
 			<arg value="-r"/>
 			<arg value="requirements.txt"/>
 			<arg value="-t"/>
 			<arg value="src/bin/ftp_receiver_app"/>
 			<arg value="--upgrade"/>
-		</exec>
+        </exec>
     </target>
+
+	<target name="compile" depends="install_reqs" />
 </project>
