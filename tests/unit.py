@@ -7,7 +7,7 @@ import sys
 import os
 import errno
 
-sys.path.append(os.path.join("..", "src", "bin") )
+sys.path.append(os.path.join("..", "src", "bin"))
 
 from ftp import *
 

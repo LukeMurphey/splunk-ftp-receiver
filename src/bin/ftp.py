@@ -5,14 +5,16 @@ This module defines a modular input that wires up Splunk to an FTP server (provi
 import sys
 import time
 import os
-import sys
 
 path_to_mod_input_lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'modular_input.zip')
 sys.path.insert(0, path_to_mod_input_lib)
 
+path_to_py_libs = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ftp_receiver_app')
+sys.path.append(path_to_py_libs)
+
 from splunk.clilib.bundle_paths import make_splunkhome_path
 
-from modular_input import ModularInput, Field, IntegerField, FieldValidationException
+from modular_input import ModularInput, Field, IntegerField, FieldValidationException, FilePathField
 from ftp_receiver_app.pyftpdlib.authorizers import DummyAuthorizer, AuthenticationFailed
 from ftp_receiver_app.pyftpdlib.handlers import FTPHandler
 from ftp_receiver_app.pyftpdlib.servers import FTPServer
@@ -189,7 +191,7 @@ class FTPPathField(Field):
 
             path_so_far = os.path.join(path_so_far, path_part)
 
-            paths.append(os.path.normpath(os.path.join(os.environ['SPLUNK_HOME'],path_so_far)))
+            paths.append(os.path.normpath(os.path.join(os.environ['SPLUNK_HOME'], path_so_far)))
 
         return paths
 
@@ -232,6 +234,9 @@ class FTPPathField(Field):
         # Return the path that is normalized and resolved
         return resolved_path
 
+class EncryptionNotSupported(Exception):
+    pass
+
 class FTPInput(ModularInput):
     """
     The FTP input modular input runs a FTP server so that files can be accepted and indexed.
@@ -249,14 +254,15 @@ class FTPInput(ModularInput):
                 IntegerField("port", "Port", 'The port to run the FTP server on', none_allowed=False, empty_allowed=False),
                 FTPPathField("path", "Path", 'The path to place the received files; relative paths are based on $SPLUNK_HOME', none_allowed=False, empty_allowed=False),
                 Field("address", "Address to Listen on", 'The address to have the FTP server listen on; leave blank to listen on all interfaces', none_allowed=True, empty_allowed=True),
-                #DurationField("interval", "Interval", "The interval defining how often to make sure the server is running", empty_allowed=True, none_allowed=True)
+                FilePathField("certfile", "Certificate File", 'The path to the certificate; relative paths are based on $SPLUNK_HOME', none_allowed=True, empty_allowed=True),
+                FilePathField("keyfile", "Key File", 'The path to the key file; relative paths are based on $SPLUNK_HOME', none_allowed=True, empty_allowed=True),
                 ]
 
         ModularInput.__init__(self, scheme_args, args, logger_name="ftp_modular_input")
 
         self.ftp_daemons = []
 
-    def start_server(self, address, port, path, callback):
+    def start_server(self, address, port, path, callback, certfile=None, keyfile=None):
         """
         Start the FTP server on the given port.
         """
@@ -329,8 +335,24 @@ class FTPInput(ModularInput):
                     'file' : file
                 })
 
+
+        try:
+            from ftp_receiver_app.pyftpdlib.handlers import TLS_FTPHandler
+            class SplunkFTPSHandler(SplunkFTPHandler, TLS_FTPHandler):
+                pass
+        except ImportError:
+            SplunkFTPSHandler = None
+
         # Instantiate FTP handler class
-        handler = SplunkFTPHandler
+        if certfile is not None and len(certfile) > 0 and SplunkFTPSHandler is None:
+            raise EncryptionNotSupported()
+        elif certfile is not None and len(certfile) > 0 and SplunkFTPSHandler is not None:
+            handler = SplunkFTPSHandler
+            handler.certfile = certfile
+            handler.keyfile = keyfile
+        else:
+            handler = SplunkFTPHandler
+        
         handler.authorizer = authorizer
 
         # Define a customized banner (string returned when client connects)
@@ -370,7 +392,13 @@ class FTPInput(ModularInput):
         index = cleaned_params.get("index", "default")
         path = cleaned_params.get("path", None)
         address = cleaned_params.get("address", "")
+
         source = stanza
+
+        certfile = cleaned_params.get("certfile", None)
+        keyfile = cleaned_params.get("keyfile", None)
+
+        self.logger.debug('PID is %i/%i', os.getpid(), os.getppid())
 
         # Make the path if necessary
         try:
@@ -407,8 +435,8 @@ class FTPInput(ModularInput):
 
         while not started and attempts < FTPInput.MAX_ATTEMPTS_TO_START_SERVER:
             try:
-                self.start_server(address, port, path, callback)
-                started = True
+                if self.start_server(address, port, path, callback, certfile, keyfile) is not None:
+                    started = True
             except IOError:
 
                 # Log a message noting that port is taken
@@ -418,7 +446,9 @@ class FTPInput(ModularInput):
                 started = False
                 time.sleep(2)
                 attempts = attempts + 1
-
+            except EncryptionNotSupported:
+                self.logger.warn("A request was made for a server with encryption support but SSL/TLS support is not available. See the README for how to install the libraries in order to enable SSL/TLS support.")
+                sys.exit(-1)
 
 if __name__ == '__main__':
     ftp_input = None
@@ -427,6 +457,8 @@ if __name__ == '__main__':
         ftp_input = FTPInput()
         ftp_input.execute()
         sys.exit(0)
+    except EncryptionNotSupported:
+        sys.exit(-1)
     except Exception:
         if ftp_input is not None and ftp_input.logger is not None:
             # This logs general exceptions that would have been unhandled otherwise
