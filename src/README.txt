@@ -29,7 +29,7 @@ The FTP receiver app supports SSL but only if the SSL libraries are installed. T
 
     /opt/splunk/bin/splunk cmd python /opt/splunk/etc/apps/ftp_receiver/bin/setup.py
 
-Restart Splunk once this is done in order for the app to recognize that the SSL libraries have been installed.
+You may need to restart Splunk once this is done in order for the app to recognize that the SSL libraries have been installed. However, Splunk recognizes them without a restart in my experience.
 
 
 Step two: create an input

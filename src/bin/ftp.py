@@ -234,6 +234,23 @@ class FTPPathField(Field):
         # Return the path that is normalized and resolved
         return resolved_path
 
+def isFTPSSupported():
+    try:
+        from ftp_receiver_app.pyftpdlib.handlers import TLS_FTPHandler
+        return True
+    except ImportError:
+        return False
+
+class SSLPathField(FilePathField):
+    def to_python(self, value, session_key=None):
+        py_value = FilePathField.to_python(self, value, session_key)
+
+        # See if we can enable SSL/TLS
+        if py_value is not None and len(py_value) > 0 and not isFTPSSupported():
+            raise FieldValidationException('SSL/TLS is not supported because the SSL libraries have not been installed yet; see the app README for details')
+
+        return py_value
+
 class EncryptionNotSupported(Exception):
     pass
 
@@ -254,8 +271,8 @@ class FTPInput(ModularInput):
                 IntegerField("port", "Port", 'The port to run the FTP server on', none_allowed=False, empty_allowed=False),
                 FTPPathField("path", "Path", 'The path to place the received files; relative paths are based on $SPLUNK_HOME', none_allowed=False, empty_allowed=False),
                 Field("address", "Address to Listen on", 'The address to have the FTP server listen on; leave blank to listen on all interfaces', none_allowed=True, empty_allowed=True),
-                FilePathField("certfile", "Certificate File", 'The path to the certificate; relative paths are based on $SPLUNK_HOME', none_allowed=True, empty_allowed=True),
-                FilePathField("keyfile", "Key File", 'The path to the key file; relative paths are based on $SPLUNK_HOME', none_allowed=True, empty_allowed=True),
+                SSLPathField("certfile", "Certificate File", 'The path to the certificate; relative paths are based on $SPLUNK_HOME', none_allowed=True, empty_allowed=True),
+                SSLPathField("keyfile", "Key File", 'The path to the key file; relative paths are based on $SPLUNK_HOME', none_allowed=True, empty_allowed=True),
                 ]
 
         ModularInput.__init__(self, scheme_args, args, logger_name="ftp_modular_input")
@@ -335,7 +352,7 @@ class FTPInput(ModularInput):
                     'file' : file
                 })
 
-
+        # Get the FTPS handler if is enabled
         try:
             from ftp_receiver_app.pyftpdlib.handlers import TLS_FTPHandler
             class SplunkFTPSHandler(SplunkFTPHandler, TLS_FTPHandler):
@@ -457,8 +474,6 @@ if __name__ == '__main__':
         ftp_input = FTPInput()
         ftp_input.execute()
         sys.exit(0)
-    except EncryptionNotSupported:
-        sys.exit(-1)
     except Exception:
         if ftp_input is not None and ftp_input.logger is not None:
             # This logs general exceptions that would have been unhandled otherwise
