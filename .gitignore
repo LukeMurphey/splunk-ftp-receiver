@@ -24,3 +24,6 @@ Thumbs.db
 /tmp/
 
 .vscode/*
+
+# This file seems to store the path to the system that built the requirements
+src/bin/ftp_receiver_app/bin/ftpbench

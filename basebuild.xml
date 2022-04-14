@@ -67,6 +67,7 @@ Here are some other supported variables:
 ║ value.build.package.password ║ PACKAGE_PASSWORD     ║ The password to use when downloading the package                                                                          ║                                              ║
 ║ skip_bump                    ║                      ║ Indicates if the build script shouldn't try to bump the web-server in order to prevent SplunkWeb from returning old files ║                                              ║
 ║ value.build.test.directory   ║ TEST_DIRECTORY       ║ Indicates where the tests reside                                                                                          ║                                              ║
+║ value.build.app_bin          ║                      ║ Indicates the directory where Python libraries from a requirements.txt ought to be placed                                 ║ src/bin                                      ║
 ╚══════════════════════════════╩══════════════════════╩═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╩══════════════════════════════════════════════╝
 
 ======================================================
@@ -321,6 +322,7 @@ You can customize the build process by placing properties in the default.propert
 		<property name="value.build.appname" value="${ant.project.name}" />
 		<property name="value.build.libraries" value="${basedir}/lib" />
 		<property name="absolute_lib_path" location="${value.build.libraries}"/>
+		<property name="value.build.app_bin" value="${value.src.directory}/bin/${value.build.appname}_app" />
 
 	</target>
 
@@ -428,6 +430,15 @@ You can customize the build process by placing properties in the default.propert
             <fileset dir="tmp/packages" />
         </delete>
     </target>
+
+    <!-- ================================= 
+          target: link (links the src directory to the Splunk install)
+         ================================= -->
+    <target name="link" depends="initialize_libraries">
+        <shellscript shell="bash" dir="${value.src.directory}">
+         ln -s $PWD/src ${value.deploy.splunk_home}/etc/apps/${app_name}
+        </shellscript>
+    </target>
     
     <!-- ================================= 
           target: setup_tmp_directory_for_export
@@ -464,10 +475,56 @@ You can customize the build process by placing properties in the default.propert
         <exclude name="**/*.css" />
     </patternset>
 	
+	<!-- ================================= 
+      	 target: does_requirementstxt_exist	
+     	 ================================= -->
+	<target name="does_requirementstxt_exist">
+    	<condition property="requirements_txt_exists">
+      		<available file="${basedir}/requirements.txt" type="file"/>
+    	</condition>
+	</target>
+
+    <!-- ================================= 
+          target: install_reqs
+         ================================= -->
+    <target name="install_reqs" depends="initialize_properties,does_requirementstxt_exist" if="requirements_txt_exists" description="Installs Python libraries per the requirements.txt.">
+        <echo file="${value.build.app_bin}/__init__.py"></echo> 
+		<exec executable="${value.deploy.splunk_home}/bin/splunk">
+        	<arg line="cmd" />
+        	<arg line="python" />
+        	<arg line="-m" />
+			<arg line="pip" />
+			<arg line="install" />
+			<arg value="-r"/>
+			<arg value="requirements.txt"/>
+			<arg value="-t"/>
+			<arg value="${value.build.app_bin}"/>
+        </exec>
+    </target>
+
+    <!-- ================================= 
+          target: upgrade_reqs
+         ================================= -->
+    <target name="upgrade_reqs" depends="initialize_properties" description="Upgrades the Python libraries per the requirements.txt.">
+        <echo file="${value.build.app_bin}/__init__.py"></echo> 
+		<exec executable="${value.deploy.splunk_home}/bin/splunk">
+        	<arg line="cmd" />
+        	<arg line="python" />
+        	<arg line="-m" />
+			<arg line="pip" />
+			<arg line="install" />
+			<arg value="-r"/>
+			<arg value="requirements.txt"/>
+			<arg value="-t"/>
+			<arg value="${value.build.app_bin}"/>
+			<arg value="--upgrade"/>
+        </exec>
+    </target>
+
     <!-- ================================= 
           target: populate_export_dir
          ================================= -->
-    <target name="populate_export_dir" depends="initialize,get_build_number,compile">
+    <target name="populate_export_dir" depends="initialize,get_build_number,install_reqs,compile">
     	
     	<!-- Make sure that the source directory exists -->
     	<fail message="The directory where the source-code is supposed to be doesn't exist ('${absolute_src_path}')">

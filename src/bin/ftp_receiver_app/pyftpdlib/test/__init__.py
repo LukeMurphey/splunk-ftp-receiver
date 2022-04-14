@@ -2,6 +2,7 @@
 # Use of this source code is governed by MIT license that can be
 # found in the LICENSE file.
 
+from __future__ import print_function
 import contextlib
 import errno
 import functools
@@ -22,6 +23,7 @@ except ImportError:
 from pyftpdlib._compat import getcwdu
 from pyftpdlib._compat import u
 from pyftpdlib.authorizers import DummyAuthorizer
+from pyftpdlib.handlers import _import_sendfile
 from pyftpdlib.handlers import FTPHandler
 from pyftpdlib.ioloop import IOLoop
 from pyftpdlib.servers import FTPServer
@@ -36,10 +38,7 @@ else:
 if not hasattr(unittest.TestCase, "assertRaisesRegex"):
     unittest.TestCase.assertRaisesRegex = unittest.TestCase.assertRaisesRegexp
 
-if os.name == 'posix':
-    import sendfile
-else:
-    sendfile = None
+sendfile = _import_sendfile()
 
 
 # Attempt to use IP rather than hostname (test suite will run a lot faster)
@@ -255,7 +254,11 @@ def assert_free_resources():
     assert len(ts) == 1, ts
     p = psutil.Process()
     children = p.children()
-    assert not children, children
+    if children:
+        for p in children:
+            p.kill()
+            p.wait(1)
+        assert not children, children
     cons = [x for x in p.connections('tcp')
             if x.status != psutil.CONN_CLOSE_WAIT]
     assert not cons, cons

@@ -1,22 +1,3 @@
 <project default="package" name="ftp_receiver">
-	
 	<import file="basebuild.xml"/>
-	
-    <!-- ================================= 
-          target: install_reqs
-         ================================= -->
-    <target name="install_reqs" depends="">
-        <exec failonerror="true" executable="${value.deploy.splunk_home}/bin/splunk">
-        	<arg line="cmd" />
-        	<arg line="python" />
-        	<arg line="-m" />
-			<arg line="pip" />
-			<arg line="install" />
-			<arg value="-r"/>
-			<arg value="requirements.txt"/>
-			<arg value="-t"/>
-			<arg value="src/bin/ftp_receiver_app"/>
-			<arg value="--upgrade"/>
-        </exec>
-    </target>
 </project>
