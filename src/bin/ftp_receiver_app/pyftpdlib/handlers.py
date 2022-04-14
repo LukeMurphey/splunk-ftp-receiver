@@ -22,8 +22,6 @@ try:
 except ImportError:
     pwd = grp = None
 
-from OpenSSL import SSL
-
 try:
     from OpenSSL import SSL  # requires "pip install pyopenssl"
 except ImportError:
@@ -55,6 +53,7 @@ from .ioloop import RetryError
 from .ioloop import timer
 from .log import debug
 from .log import logger
+
 
 CR_BYTE = ord('\r')
 
