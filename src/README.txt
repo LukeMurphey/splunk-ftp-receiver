@@ -23,9 +23,17 @@ Install this app into Splunk by doing the following:
   5. Restart Splunk if a dialog asks you to
 
 
+[Optional step]: install libraries in order to support SSL
+----------------------------------------------------------------
+The FTP receiver app supports SSL but only if the SSL libraries are installed. To do this, run the setup.py script using Splunk's Python interpreter. Below is an example (assuming Splunk is installed in /opt/splunk):
+
+    /opt/splunk/bin/splunk cmd python /opt/splunk/etc/apps/ftp_receiver/bin/setup.py
+
+You may need to restart Splunk once this is done in order for the app to recognize that the SSL libraries have been installed. However, Splunk recognizes them without a restart in my experience.
+
+
 Step two: create an input
 ----------------------------------------------------------------
-
 Once the app is installed, you can use the app by configuring a new input:
   1. Navigate to "Settings » Data Inputs" at the menu at the top of Splunk's user interface.
   2. Click "FTP"
@@ -45,7 +53,6 @@ The FTP receiver app supports several capabilities to controls which user accoun
 Only accounts with one of these capabilities will be able to authenticate to the FTP server. Note that the username and password of the Splunk user account will be the username and password used for authenticating with the FTP server. 
 
 
-
 ================================================
 Known Limitations
 ================================================
@@ -55,6 +62,8 @@ Known Limitations
 2) Uploaded files will not be synchronized between hosts in a Search Head Clustering environment.
 
 3) This app uses Python and thus won't work on a Universal Forwarder. Make sure to use a light or a heavy forwarder.
+
+4) SSL is only supported if the SSL libraries are installed. See the install directions above to see how to get them installed.
 
 
 
@@ -81,6 +90,24 @@ Q: Can I allow non-admin users to make and edit inputs?
 A: Yes, just assign users the "edit_modinput_ftp" capability. You will likely want to give them the "list_inputs" capability too.
 
 
+Q: The app isn't working; how do I best debug it?
+
+A: Look at the logs from the application. You can see them by running a search for:
+
+    index=_internal sourcetype=ftp_modular_input
+
+
+Q: The FTP server didn't seem to shutdown properly; how do I clean this up?
+
+A: You can force the daemon to shutdown. First, identify the PID by looking for the process that is listening on port 21:
+
+    netstat -tulpn
+
+   Next, kill the process with the ID that is listening on port 21 (assuming it is on port 13512):
+
+    kill 13512
+
+
 
 ================================================
 Change History
@@ -105,4 +132,6 @@ Change History
 | 1.0.2   | Updating the mod input library to 2.1.13                                                                         |
 |---------|------------------------------------------------------------------------------------------------------------------|
 | 1.0.3   | Updating the modular input library to version 2.1.14                                                             |
+|---------|------------------------------------------------------------------------------------------------------------------|
+| 1.1.0   | Adding support for SSL/TLS; see the instructions above on how to enable it                                       |
 +---------+------------------------------------------------------------------------------------------------------------------+
